@@ -67,6 +67,11 @@ export class Run {
     return target;
   }
 
+  /** Writes an artifact — command output, a transcript — into this run's directory. */
+  async write(name: string, content: string): Promise<void> {
+    await writeFile(await this.path(name), content);
+  }
+
   async writeResult(result: unknown): Promise<void> {
     await writeFile(join(this.dir, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
   }

@@ -57,3 +57,9 @@ export async function isTracked(path: string, cwd: string): Promise<boolean> {
 export async function createBranch(name: string, cwd: string): Promise<void> {
   await git(["switch", "--create", name], cwd);
 }
+
+/** Stages `paths` and commits them. Nothing else in the tree is touched. */
+export async function commit(paths: string[], message: string, cwd: string): Promise<void> {
+  await git(["add", "--", ...paths], cwd);
+  await git(["commit", "--message", message, "--", ...paths], cwd);
+}
