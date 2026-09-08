@@ -1,0 +1,23 @@
+{
+  "name": "hedera-harness",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Takes a PRD and an existing Hedera dApp repo, and loops an agent until the PRD is implemented or the budget is spent.",
+  "type": "module",
+  "bin": {
+    "harness": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "harness": "npm run build --silent && node dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.5.0",
+    "typescript": "^7.0.2"
+  }
+}
