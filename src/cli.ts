@@ -4,9 +4,11 @@ import { constants } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor } from "./doctor.js";
+import { evaluate } from "./evaluate.js";
 import { generate } from "./generate.js";
 import { createBranch, currentBranch, headCommit, repoRoot } from "./git.js";
 import { Run, ensureExcluded, timestamp } from "./run.js";
+import { startServer } from "./serve.js";
 import { describeFailure, runStages } from "./test.js";
 
 const USAGE = `usage: harness run --spec <path> [--max-attempts N] [--yes]
@@ -93,10 +95,41 @@ async function main(argv: string[]): Promise<number> {
     run,
     prefix: "attempt-1",
   });
-  await run.log(failure === null ? "attempt 1 passed TEST" : `attempt 1 ${describeFailure(failure)}`);
+
+  if (failure !== null) {
+    await run.log(`attempt 1 ${describeFailure(failure)}`);
+    console.log(`\n${branch}\n${run.dir}`);
+    return 1;
+  }
+  await run.log("attempt 1 passed TEST");
+
+  // EVALUATE needs the app running; the server is stopped whatever happens,
+  // so the next attempt's build does not collide with it.
+  const server = await startServer(config.serve, root);
+  await run.log(`serving at ${server.url}`);
+  let outcome;
+  try {
+    outcome = await evaluate({
+      repoRoot: root,
+      run,
+      specPath: options.spec,
+      attempt: 1,
+      appUrl: server.url,
+    });
+  } finally {
+    await server.stop();
+  }
+
+  await run.log(
+    outcome.type === "no-verdict"
+      ? `attempt 1 produced no verdict: ${outcome.reason}`
+      : outcome.verdict.pass
+        ? "attempt 1 PASSED evaluation"
+        : `attempt 1 FAILED evaluation: ${outcome.verdict.failures.length} findings`,
+  );
 
   console.log(`\n${branch}\n${run.dir}`);
-  return 0;
+  return outcome.type === "verdict" && outcome.verdict.pass ? 0 : 1;
 }
 
 try {
