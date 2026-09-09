@@ -6,10 +6,11 @@ import { CONFIG_FILE, type HarnessConfig, readConfig, writeConfig } from "./conf
 import { commit, isClean } from "./git.js";
 import { type Proposal, resolveCommands } from "./resolve.js";
 import type { Run } from "./run.js";
+import { ServeError, startServer } from "./serve.js";
+import { describeFailure, runStages } from "./test.js";
 
 /** See PLAN-V2 § Bounds. Starting points, to be tuned once there are real runs. */
 const RESOLVE_TIMEOUT_MS = 5 * 60_000;
-const COMMAND_TIMEOUT_MS = 20 * 60_000;
 
 export class DoctorError extends Error {
   constructor(message: string) {
@@ -132,42 +133,46 @@ async function confirm(options: DoctorOptions): Promise<void> {
 }
 
 /**
- * A resolution is only worth recording once it has actually run. This is what
- * stops a plausible-looking guess from being committed to `harness.yaml`.
+ * A resolution is only worth recording once it has actually run, and a repo is
+ * only worth generating into once it was already healthy. Both use the same
+ * code path an attempt will use, so the commands that proved the repo healthy
+ * are exactly the commands the agent is later judged against.
  */
 async function verifyByRunning(
   config: HarnessConfig,
   repoRoot: string,
   run: Run,
 ): Promise<void> {
-  const stages: Array<[string, Command | null]> = [
-    ["install", config.install],
-    ["build", config.build],
-    ["test", config.test],
-  ];
-
-  for (const [name, command] of stages) {
-    if (command === null) {
-      await run.log(`baseline ${name} skipped (none)`);
-      continue;
-    }
-    await run.log(`baseline ${name}: ${describe(command)}`);
-    const result = await runCommand(command, repoRoot, COMMAND_TIMEOUT_MS);
-    await run.write(`baseline-${name}.txt`, result.output);
-
-    if (result.timedOut) {
-      throw new DoctorError(
-        `baseline ${name} did not finish within ${COMMAND_TIMEOUT_MS / 60_000} minutes`,
-      );
-    }
-    if (result.code !== 0) {
-      throw new DoctorError(
-        `baseline ${name} failed (exit ${result.code}) on the untouched repo. ` +
-          `Either the command is wrong or the project is already broken — ` +
-          `output is in ${run.dir}/baseline-${name}.txt`,
-      );
-    }
+  const failure = await runStages({ config, repoRoot, run, prefix: "baseline" });
+  if (failure !== null) {
+    throw new DoctorError(
+      `baseline ${describeFailure(failure)} on the untouched repo. ` +
+        `Either the command is wrong or the project is already broken — ` +
+        `output is in ${join(run.dir, failure.artifact)}`,
+    );
   }
+
+  // `serve` is the one command the stages above cannot check: it never exits.
+  // Starting it here turns a wrong dev-server command into a four-second
+  // failure instead of one discovered after a generation has been paid for.
+  await run.log(`baseline serve: ${describe(config.serve)}`);
+  let server;
+  try {
+    server = await startServer(config.serve, repoRoot);
+  } catch (error) {
+    if (error instanceof ServeError) {
+      await run.write(join("baseline", "serve.txt"), error.output);
+      throw new DoctorError(
+        `baseline serve failed: ${error.message} — ` +
+          `output is in ${join(run.dir, "baseline", "serve.txt")}`,
+      );
+    }
+    throw error;
+  }
+
+  await run.write(join("baseline", "serve.txt"), server.output());
+  await run.log(`baseline serve answered at ${server.url}`);
+  await server.stop();
 }
 
 /**

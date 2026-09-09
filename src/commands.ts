@@ -104,7 +104,12 @@ export async function runCommand(
   });
 }
 
-function killGroup(pid: number | undefined): void {
+/**
+ * Kills a detached child and everything it spawned. A dev server that forks
+ * workers must not outlive the run, or the next attempt's `serve` finds the
+ * port taken by a process nobody owns.
+ */
+export function killGroup(pid: number | undefined): void {
   if (pid === undefined) return;
   try {
     process.kill(-pid, "SIGTERM");
