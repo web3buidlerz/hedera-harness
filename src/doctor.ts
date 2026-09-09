@@ -4,7 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { type Command, describe, runCommand } from "./commands.js";
 import { CONFIG_FILE, type HarnessConfig, readConfig, writeConfig } from "./config.js";
 import { commit, isClean } from "./git.js";
-import { resolveCommands } from "./resolve.js";
+import { type Proposal, resolveCommands } from "./resolve.js";
 import type { Run } from "./run.js";
 
 /** See PLAN-V2 § Bounds. Starting points, to be tuned once there are real runs. */
@@ -44,7 +44,8 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
   await run.log("check tree clean");
 
   const existing = await readConfig(repoRoot);
-  const config = existing ?? (await resolve(options));
+  const proposal = existing === null ? await resolve(options) : null;
+  const config = existing ?? proposal!.config;
   if (existing !== null) await run.log(`check commands from ${CONFIG_FILE}`);
 
   // Every run, not just the first. On a first run this proves the resolution
@@ -53,8 +54,8 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
   // charged to the generator as a failed attempt.
   await verifyByRunning(config, repoRoot, run);
 
-  if (existing === null) {
-    await writeConfig(repoRoot, config);
+  if (proposal !== null) {
+    await writeConfig(repoRoot, config, proposal.notes);
     await commit([CONFIG_FILE], `chore: record harness commands in ${CONFIG_FILE}`, repoRoot);
     await run.log(`check wrote and committed ${CONFIG_FILE}`);
   }
@@ -78,7 +79,7 @@ async function exists(binary: string, cwd: string): Promise<boolean> {
   return result.code === 0;
 }
 
-async function resolve(options: DoctorOptions): Promise<HarnessConfig> {
+async function resolve(options: DoctorOptions): Promise<Proposal> {
   const { repoRoot, run } = options;
   await run.log("resolving commands");
 
@@ -94,11 +95,11 @@ async function resolve(options: DoctorOptions): Promise<HarnessConfig> {
   console.log(`\n${CONFIG_FILE} for this project:\n`);
   for (const [name, command] of entries(config)) {
     console.log(`  ${name.padEnd(8)}${command === null ? "(none)" : describe(command)}`);
+    console.log(`  ${" ".repeat(8)}${notes[name as keyof typeof notes] ?? ""}\n`);
   }
-  console.log(`\n${notes.trim()}\n`);
 
   await confirm(options);
-  return config;
+  return proposal;
 }
 
 function entries(config: HarnessConfig): Array<[string, Command | null]> {

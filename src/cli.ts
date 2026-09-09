@@ -8,18 +8,18 @@ import { doctor } from "./doctor.js";
 import { createBranch, currentBranch, headCommit, repoRoot } from "./git.js";
 import { Run, ensureExcluded, timestamp } from "./run.js";
 
-const USAGE = `usage: harness run --prd <path> [--max-attempts N] [--yes]
+const USAGE = `usage: harness run --spec <path> [--max-attempts N] [--yes]
 
 Run from inside the target repository.
 
-  --prd <path>        the feature to build
+  --spec <path>        the feature to build
   --max-attempts N    repair attempts before giving up (default 3)
   --yes               skip the first-run command confirmation`;
 
 class UsageError extends Error {}
 
 interface Options {
-  prd: string;
+  spec: string;
   maxAttempts: number;
   assumeYes: boolean;
 }
@@ -34,7 +34,7 @@ function parse(argv: string[]): Options {
     ({ values } = parseArgs({
       args: rest,
       options: {
-        prd: { type: "string" },
+        spec: { type: "string" },
         "max-attempts": { type: "string", default: "3" },
         yes: { type: "boolean", default: false },
       },
@@ -44,21 +44,21 @@ function parse(argv: string[]): Options {
     throw new UsageError(`${(error as Error).message}\n\n${USAGE}`);
   }
 
-  if (values.prd === undefined) throw new UsageError(`--prd is required\n\n${USAGE}`);
+  if (values.spec === undefined) throw new UsageError(`--spec is required\n\n${USAGE}`);
 
   const maxAttempts = Number(values["max-attempts"]);
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
     throw new UsageError(`--max-attempts must be a positive integer`);
   }
 
-  return { prd: resolve(values.prd), maxAttempts, assumeYes: values.yes };
+  return { spec: resolve(values.spec), maxAttempts, assumeYes: values.yes };
 }
 
 async function main(argv: string[]): Promise<number> {
   const options = parse(argv);
 
-  await access(options.prd, constants.R_OK).catch(() => {
-    throw new Error(`cannot read PRD: ${options.prd}`);
+  await access(options.spec, constants.R_OK).catch(() => {
+    throw new Error(`cannot read spec: ${options.spec}`);
   });
 
   const root = await repoRoot(process.cwd());
@@ -70,7 +70,7 @@ async function main(argv: string[]): Promise<number> {
 
   await run.log(`run ${stamp}`);
   await run.log(`repo ${root}`);
-  await run.log(`prd ${options.prd}`);
+  await run.log(`spec ${options.spec}`);
   await run.log(`from ${await currentBranch(root)} at ${(await headCommit(root)).slice(0, 12)}`);
   await run.log(`max-attempts ${options.maxAttempts}`);
 

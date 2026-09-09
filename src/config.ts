@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parse, stringify } from "yaml";
+import { Document, isMap, isScalar, parse } from "yaml";
 import { z } from "zod";
 import type { Command } from "./commands.js";
 
@@ -55,17 +55,36 @@ export async function readConfig(repoRoot: string): Promise<HarnessConfig | null
   return parsed.data;
 }
 
-export async function writeConfig(repoRoot: string, config: HarnessConfig): Promise<void> {
-  const body = stringify(
-    {
-      install: flatten(config.install),
-      build: flatten(config.build),
-      test: config.test === null ? null : flatten(config.test),
-      serve: flatten(config.serve),
-    },
-    { lineWidth: 0 },
-  );
-  await writeFile(join(repoRoot, CONFIG_FILE), body);
+/** One sentence per command, emitted as the comment above it. */
+export type ConfigNotes = Partial<Record<keyof HarnessConfig, string>>;
+
+/**
+ * Writes the config, with each command's rationale as the comment above it.
+ * Those sentences are the reason this file is YAML rather than JSON: the
+ * question a reader has months later is "why this command and not the
+ * obvious-looking one", and the answer belongs next to the answer it explains.
+ */
+export async function writeConfig(
+  repoRoot: string,
+  config: HarnessConfig,
+  notes: ConfigNotes = {},
+): Promise<void> {
+  const doc = new Document({
+    install: flatten(config.install),
+    build: flatten(config.build),
+    test: config.test === null ? null : flatten(config.test),
+    serve: flatten(config.serve),
+  });
+
+  if (isMap(doc.contents)) {
+    for (const item of doc.contents.items) {
+      const key = isScalar(item.key) ? String(item.key.value) : null;
+      const note = key === null ? undefined : notes[key as keyof HarnessConfig];
+      if (note !== undefined && isScalar(item.key)) item.key.commentBefore = ` ${note.trim()}`;
+    }
+  }
+
+  await writeFile(join(repoRoot, CONFIG_FILE), doc.toString({ lineWidth: 0 }));
 }
 
 /** Writes `yarn install` rather than `{ run: yarn install }` when there is no cwd. */

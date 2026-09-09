@@ -9,9 +9,17 @@ const TOOL = "propose_commands";
 const QUALIFIED_TOOL = `mcp__harness__${TOOL}`;
 const README_BYTES = 4_000;
 
+/** One sentence per command, written into `harness.yaml` above the line it explains. */
+export interface Notes {
+  install: string;
+  build: string;
+  test: string;
+  serve: string;
+}
+
 export interface Proposal {
   config: HarnessConfig;
-  notes: string;
+  notes: Notes;
 }
 
 export class ResolutionError extends Error {
@@ -56,8 +64,17 @@ export async function resolveCommands(
             .describe("null if the project genuinely has no test command"),
           serve: commandShape.describe("Starts a long-running dev server"),
           notes: z
-            .string()
-            .describe("One line per command saying why you chose it, for a human to confirm"),
+            .object({
+              install: z.string(),
+              build: z.string(),
+              test: z.string(),
+              serve: z.string(),
+            })
+            .describe(
+              "Why you chose each command — one short sentence each. These are written " +
+                "into harness.yaml as comments, so write them for whoever reads that file " +
+                "later wondering why this command and not the obvious-looking one.",
+            ),
         },
         async (args) => {
           captured.proposal = {
@@ -67,7 +84,7 @@ export async function resolveCommands(
               test: args.test as Command | null,
               serve: args.serve as Command,
             },
-            notes: args.notes,
+            notes: args.notes as Notes,
           };
           return { content: [{ type: "text", text: "Recorded." }] };
         },
