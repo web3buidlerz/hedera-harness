@@ -63,7 +63,11 @@ Each command may be a string or `{ run, cwd }`. `cwd` defaults to the repo root.
 
 ### GENERATE
 
-One `query()` with the spec as the prompt, `cwd` = repo, Hedera skills loaded as local plugins from `~/Work/hedera-skills/plugins/*`. A `PreToolUse` hook denies writes to `.env*` files. Everything else — which files to touch, which skills to use, whether to write tests — is the agent's call.
+One `query()` with the spec as the prompt, `cwd` = repo, Hedera skills loaded as local plugins from `~/Work/hedera-skills/plugins/*`. A `PreToolUse` hook denies writes to dotenv files — `.env.example` and friends excepted, since templates hold no secrets. Everything else — which files to touch, which skills to use, whether to write tests — is the agent's call.
+
+**The hook is a first line of defence, not the guarantee.** Tested against a spec that asked for a `.env`, it refused `Write`, then `printf > .env`, then `cp /tmp/x ./.env` — and the agent then wrote the file with `python3 -c "open('.env','w')"`. Pattern-matching a command string cannot contain an interpreter, and no amount of regex will change that.
+
+Two things follow. First, **refuse only what is unsafe and say what is allowed**: the first version also blocked `.env.example`, the very alternative its own message recommended, and that dead end is what drove the escalation. Given a legal path the agent took it after three refusals and stopped. Second, **the enforceable guarantee belongs at the commit**, not the write: the irreversible harm is a secret entering git history, and the harness owns the staging step. Phase 6 must never stage a dotenv file, whatever the working tree contains.
 
 On a repair attempt, the same session is resumed with the failure as the next message:
 
