@@ -72,6 +72,8 @@ On a repair attempt, the same session is resumed with the failure as the next me
 
 Each failure gets an identity — the failing command plus a normalised first error line, or the `what`/`where` of each verdict failure — hashed and recorded. Two attempts producing the same hash means the resumed session is stuck on it, so the next attempt starts a fresh session with the failure as its opening prompt instead of resuming. This is the whole convergence mechanism: it tells the report whether an attempt fixed anything or traded one failure for another, and it is the only way out of a session that has talked itself into a corner.
 
+Every attempt also writes `feedback.json` — `{ ok: boolean, results: string[] }`, one line per failure, whichever stage produced it. The resumed session does not read it; the failure reaches the agent as the next message in its own conversation. The file exists so a human reviewing the branch afterwards can see what each attempt was told without replaying a transcript, and so a fresh session after a reset has something to be seeded with.
+
 ### TEST
 
 Runs `install` only if `package.json` or the lockfile changed since the last attempt, then `build`, then `test`. The first non-zero exit code fails the stage; the later commands are skipped. The failing command's output is captured for the repair prompt.
@@ -89,6 +91,10 @@ The harness starts `serve`, reads the local URL from its output, and waits for i
 - one in-process tool, `submit_verdict`, registered with `createSdkMcpServer`
 
 The evaluator is told: *read the PRD, decide what a user should be able to do, try it in the browser, verify any on-chain effect through the mirror node, then call `submit_verdict`.*
+
+**Every attempt gets a new evaluator.** GENERATE resumes its session so it remembers what it already tried; EVALUATE never does. A resumed evaluator would remember the failures it reported last time — which is exactly the list the generator was just told to fix — so it would re-check those and wave the rest through, arriving already expecting a broken app. Each verdict has to be an independent judgment of the app as it stands, not a diff against its own previous opinion. The worker remembers; the referee does not.
+
+Three unrelated things here are called a session, and only the first is resumed: the generator's Claude Code session (one per run, across attempts), the evaluator's Claude Code session (one per EVALUATE — many Bash calls, one conversation, no `resume`), and the `playwright-cli -s=<name>` browser session that keeps the page alive between those Bash calls and is closed with the browser.
 
 ```ts
 submit_verdict({
@@ -141,7 +147,8 @@ The run works on a new branch `harness/<timestamp>` created from the current com
     build.txt          build output
     test.txt           test output
     evaluate.jsonl     SDK messages
-    verdict.json       submit_verdict payload
+    verdict.json       submit_verdict payload, exactly as the evaluator sent it
+    feedback.json      { ok, results } — what this attempt failed on, for review
     evidence/          playwright-cli screenshots and snapshots
   result.json          { passed, attempts, branch, failures: per attempt, by hash }
 ```
