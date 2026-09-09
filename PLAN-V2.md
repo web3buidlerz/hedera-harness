@@ -90,7 +90,9 @@ The harness starts `serve`, reads the local URL from its output, and waits for i
 - Playwright's CLI skill loaded as a local plugin; the agent drives the browser with `playwright-cli` through Bash
 - one in-process tool, `submit_verdict`, registered with `createSdkMcpServer`
 
-The evaluator is told: *read the spec, decide what a user should be able to do, try it in the browser, verify any on-chain effect through the mirror node, then call `submit_verdict`.*
+The evaluator is told: *read the spec, decide what a user should be able to do, try it in the browser, verify any on-chain effect through the mirror node, saving a screenshot, snapshot or response into `evidence/` as you go, then call `submit_verdict` citing those files.*
+
+The evidence instruction has to be there from the first version, not added once the check is written. An evaluator that was never asked to save anything has nothing to cite, so the field comes back empty and there is nothing to verify — and by then every verdict already recorded is missing it.
 
 **Every attempt gets a new evaluator.** GENERATE resumes its session so it remembers what it already tried; EVALUATE never does. A resumed evaluator would remember the failures it reported last time — which is exactly the list the generator was just told to fix — so it would re-check those and wave the rest through, arriving already expecting a broken app. Each verdict has to be an independent judgment of the app as it stands, not a diff against its own previous opinion. The worker remembers; the referee does not.
 
