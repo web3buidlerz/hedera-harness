@@ -40,6 +40,7 @@ export interface EvaluateOptions {
   run: Run;
   specPath: string;
   attempt: number;
+  model: string;
   appUrl: string;
 }
 
@@ -130,6 +131,7 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
       prompt: brief(appUrl, hedera()),
       options: {
         cwd: workspace,
+        model: options.model,
         plugins: [{ type: "local", path: playwrightSkills() }],
         mcpServers: { harness: server },
         settingSources: [],

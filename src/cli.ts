@@ -14,6 +14,7 @@ Run from inside the target repository.
 
   --spec <path>        the feature to build
   --max-attempts N    repair attempts before giving up (default 3)
+  --model NAME        agent model: sonnet (default), opus, haiku, or a full id
   --yes               skip the first-run command confirmation`;
 
 class UsageError extends Error {}
@@ -21,8 +22,12 @@ class UsageError extends Error {}
 interface Options {
   spec: string;
   maxAttempts: number;
+  model: string;
   assumeYes: boolean;
 }
+
+/** Pinned rather than inherited, so a run does not change meaning when the CLI's default moves. */
+const DEFAULT_MODEL = process.env["HARNESS_MODEL"] ?? "sonnet";
 
 function parse(argv: string[]): Options {
   const [command, ...rest] = argv;
@@ -36,6 +41,7 @@ function parse(argv: string[]): Options {
       options: {
         spec: { type: "string" },
         "max-attempts": { type: "string", default: "3" },
+        model: { type: "string", default: DEFAULT_MODEL },
         yes: { type: "boolean", default: false },
       },
       strict: true,
@@ -51,7 +57,7 @@ function parse(argv: string[]): Options {
     throw new UsageError(`--max-attempts must be a positive integer`);
   }
 
-  return { spec: resolve(values.spec), maxAttempts, assumeYes: values.yes };
+  return { spec: resolve(values.spec), maxAttempts, model: values.model, assumeYes: values.yes };
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -72,11 +78,16 @@ async function main(argv: string[]): Promise<number> {
   await run.log(`repo ${root}`);
   await run.log(`spec ${options.spec}`);
   await run.log(`from ${await currentBranch(root)} at ${(await headCommit(root)).slice(0, 12)}`);
-  await run.log(`max-attempts ${options.maxAttempts}`);
+  await run.log(`max-attempts ${options.maxAttempts}, model ${options.model}`);
 
   // DOCTOR runs before the branch exists: harness.yaml describes the project,
   // so it is committed where the project lives, not on a throwaway run branch.
-  const config = await doctor({ repoRoot: root, run, assumeYes: options.assumeYes });
+  const config = await doctor({
+    repoRoot: root,
+    run,
+    model: options.model,
+    assumeYes: options.assumeYes,
+  });
 
   await createBranch(branch, root);
   await run.log(`branch ${branch}`);
@@ -89,6 +100,7 @@ async function main(argv: string[]): Promise<number> {
     spec: await readFile(options.spec, "utf8"),
     branch,
     maxAttempts: options.maxAttempts,
+    model: options.model,
   });
 
   console.log(

@@ -22,6 +22,7 @@ export class DoctorError extends Error {
 export interface DoctorOptions {
   repoRoot: string;
   run: Run;
+  model: string;
   /** Skip the first-run confirmation. Required when stdin is not a terminal. */
   assumeYes: boolean;
 }
@@ -84,7 +85,7 @@ async function resolve(options: DoctorOptions): Promise<Proposal> {
   const { repoRoot, run } = options;
   await run.log("resolving commands");
 
-  const proposal = await resolveCommands(repoRoot, RESOLVE_TIMEOUT_MS);
+  const proposal = await resolveCommands(repoRoot, RESOLVE_TIMEOUT_MS, options.model);
   const { config, notes } = proposal;
 
   for (const [name, command] of entries(config)) {

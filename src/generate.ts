@@ -26,6 +26,7 @@ export interface GenerateOptions {
   /** The spec on a first attempt; the failure to repair on any attempt after. */
   prompt: string;
   attempt: number;
+  model: string;
   /** Continue the previous attempt's conversation. Omitted after a reset. */
   resume?: string | undefined;
 }
@@ -65,6 +66,7 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
       prompt: options.prompt,
       options: {
         cwd: repoRoot,
+        model: options.model,
         ...(options.resume === undefined ? {} : { resume: options.resume }),
         plugins: plugins.map((path) => ({ type: "local" as const, path })),
         // The repo's own CLAUDE.md is worth having; the operator's personal
