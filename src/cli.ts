@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { describe } from "./commands.js";
 import { doctor } from "./doctor.js";
+import { generate } from "./generate.js";
 import { createBranch, currentBranch, headCommit, repoRoot } from "./git.js";
 import { Run, ensureExcluded, timestamp } from "./run.js";
+import { describeFailure, runStages } from "./test.js";
 
 const USAGE = `usage: harness run --spec <path> [--max-attempts N] [--yes]
 
@@ -81,8 +82,20 @@ async function main(argv: string[]): Promise<number> {
   await createBranch(branch, root);
   await run.log(`branch ${branch}`);
 
-  await run.log(`ready: ${describe(config.build)}`);
-  console.log(`\n${run.dir}`);
+  // Phase 4: one attempt, no repair. The loop that would react to a failure
+  // and call generate() again is phase 6.
+  const spec = await readFile(options.spec, "utf8");
+  await generate({ repoRoot: root, run, prompt: spec, attempt: 1 });
+
+  const failure = await runStages({
+    config,
+    repoRoot: root,
+    run,
+    prefix: "attempt-1",
+  });
+  await run.log(failure === null ? "attempt 1 passed TEST" : `attempt 1 ${describeFailure(failure)}`);
+
+  console.log(`\n${branch}\n${run.dir}`);
   return 0;
 }
 
