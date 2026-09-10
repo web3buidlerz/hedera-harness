@@ -14,14 +14,18 @@ export class GitError extends Error {
   }
 }
 
-async function git(args: string[], cwd: string): Promise<string> {
+async function gitRaw(args: string[], cwd: string): Promise<string> {
   try {
     const { stdout } = await run("git", args, { cwd });
-    return stdout.trim();
+    return stdout;
   } catch (error) {
     const stderr = (error as { stderr?: string }).stderr ?? "";
     throw new GitError(args, stderr);
   }
+}
+
+async function git(args: string[], cwd: string): Promise<string> {
+  return (await gitRaw(args, cwd)).trim();
 }
 
 /**
@@ -62,4 +66,55 @@ export async function createBranch(name: string, cwd: string): Promise<void> {
 export async function commit(paths: string[], message: string, cwd: string): Promise<void> {
   await git(["add", "--", ...paths], cwd);
   await git(["commit", "--message", message, "--", ...paths], cwd);
+}
+
+/**
+ * A dotenv file must never enter git history, whatever the working tree holds.
+ * The generator's hook refuses the obvious writes, but a command string cannot
+ * be pattern-matched against an interpreter — an agent asked for a `.env` got
+ * one through `python3 -c "open('.env','w')"`. This is the half that is
+ * actually enforceable, because the harness owns staging.
+ */
+const SECRET_FILE = /(^|\/)\.env(?!\.(example|sample|template|dist|defaults)$)(\.[^/]*)?$/;
+
+/**
+ * Paths changed in the work tree, tracked or not, excluding anything ignored.
+ * Reads untrimmed output on purpose: the status code occupies the first two
+ * columns and an unmodified index leaves column one blank, so trimming would
+ * shift the first line and eat a character off its path.
+ */
+export async function changedPaths(cwd: string): Promise<string[]> {
+  const status = await gitRaw(["status", "--porcelain=v1", "--untracked-files=all"], cwd);
+  return status
+    .split("\n")
+    .filter((line) => line.length > 3)
+    .map((line) => {
+      const path = line.slice(3);
+      // Renames read `R  old -> new`; only the new path exists to stage.
+      const arrow = path.indexOf(" -> ");
+      return arrow === -1 ? path : path.slice(arrow + 4);
+    })
+    .map((path) => path.replace(/^"|"$/g, ""));
+}
+
+/**
+ * Commits everything the agent changed except secrets. Returns the new commit,
+ * or null when there was nothing to commit — an attempt that changed no files
+ * is a real outcome, not an error.
+ */
+export async function commitWork(message: string, cwd: string): Promise<string | null> {
+  const paths = await changedPaths(cwd);
+  const safe = paths.filter((path) => !SECRET_FILE.test(path));
+  if (safe.length === 0) return null;
+
+  await git(["add", "--", ...safe], cwd);
+  if ((await git(["diff", "--cached", "--name-only"], cwd)) === "") return null;
+
+  await git(["commit", "--message", message], cwd);
+  return headCommit(cwd);
+}
+
+/** Exported for tests: whether a path would be kept out of a commit. */
+export function isSecretFile(path: string): boolean {
+  return SECRET_FILE.test(path);
 }

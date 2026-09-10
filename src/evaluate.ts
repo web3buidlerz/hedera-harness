@@ -40,12 +40,25 @@ export interface EvaluateOptions {
   run: Run;
   specPath: string;
   attempt: number;
+  model: string;
   appUrl: string;
 }
 
 const failureShape = z.object({
   what: z.string().min(1).describe("What a user cannot do, in their terms"),
-  where: z.string().min(1).describe("The route, page or endpoint it happens on"),
+  /**
+   * Kept to a bare locator on purpose. The harness hashes this to tell a
+   * repeated failure from a new one across attempts, and a fresh evaluator
+   * each attempt words prose differently every time — two runs describing
+   * one bug would look like two bugs.
+   */
+  where: z
+    .string()
+    .min(1)
+    .describe(
+      "Where it happens, as a bare locator and nothing else: a route like " +
+        "`/?n=5`, or a selector like `#result`. No sentences, no explanation.",
+    ),
   /**
    * A list rather than a string, because a single field invites prose: the
    * first evaluator to fail a spec answered with a filename followed by a
@@ -118,6 +131,7 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
       prompt: brief(appUrl, hedera()),
       options: {
         cwd: workspace,
+        model: options.model,
         plugins: [{ type: "local", path: playwrightSkills() }],
         mcpServers: { harness: server },
         settingSources: [],

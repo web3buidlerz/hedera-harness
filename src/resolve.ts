@@ -46,6 +46,7 @@ const commandShape = z.object({
 export async function resolveCommands(
   repoRoot: string,
   timeoutMs: number,
+  model: string,
 ): Promise<Proposal> {
   const context = await gatherContext(repoRoot);
   const captured: { proposal: Proposal | null } = { proposal: null };
@@ -101,6 +102,7 @@ export async function resolveCommands(
       prompt: buildPrompt(context),
       options: {
         cwd: repoRoot,
+        model,
         mcpServers: { harness: server },
         allowedTools: [QUALIFIED_TOOL],
         permissionMode: "bypassPermissions",

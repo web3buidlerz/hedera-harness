@@ -4,12 +4,9 @@ import { constants } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor } from "./doctor.js";
-import { evaluate } from "./evaluate.js";
-import { generate } from "./generate.js";
+import { runLoop } from "./loop.js";
 import { createBranch, currentBranch, headCommit, repoRoot } from "./git.js";
 import { Run, ensureExcluded, timestamp } from "./run.js";
-import { startServer } from "./serve.js";
-import { describeFailure, runStages } from "./test.js";
 
 const USAGE = `usage: harness run --spec <path> [--max-attempts N] [--yes]
 
@@ -17,6 +14,7 @@ Run from inside the target repository.
 
   --spec <path>        the feature to build
   --max-attempts N    repair attempts before giving up (default 3)
+  --model NAME        agent model: sonnet (default), opus, haiku, or a full id
   --yes               skip the first-run command confirmation`;
 
 class UsageError extends Error {}
@@ -24,8 +22,12 @@ class UsageError extends Error {}
 interface Options {
   spec: string;
   maxAttempts: number;
+  model: string;
   assumeYes: boolean;
 }
+
+/** Pinned rather than inherited, so a run does not change meaning when the CLI's default moves. */
+const DEFAULT_MODEL = process.env["HARNESS_MODEL"] ?? "sonnet";
 
 function parse(argv: string[]): Options {
   const [command, ...rest] = argv;
@@ -39,6 +41,7 @@ function parse(argv: string[]): Options {
       options: {
         spec: { type: "string" },
         "max-attempts": { type: "string", default: "3" },
+        model: { type: "string", default: DEFAULT_MODEL },
         yes: { type: "boolean", default: false },
       },
       strict: true,
@@ -54,7 +57,7 @@ function parse(argv: string[]): Options {
     throw new UsageError(`--max-attempts must be a positive integer`);
   }
 
-  return { spec: resolve(values.spec), maxAttempts, assumeYes: values.yes };
+  return { spec: resolve(values.spec), maxAttempts, model: values.model, assumeYes: values.yes };
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -75,61 +78,36 @@ async function main(argv: string[]): Promise<number> {
   await run.log(`repo ${root}`);
   await run.log(`spec ${options.spec}`);
   await run.log(`from ${await currentBranch(root)} at ${(await headCommit(root)).slice(0, 12)}`);
-  await run.log(`max-attempts ${options.maxAttempts}`);
+  await run.log(`max-attempts ${options.maxAttempts}, model ${options.model}`);
 
   // DOCTOR runs before the branch exists: harness.yaml describes the project,
   // so it is committed where the project lives, not on a throwaway run branch.
-  const config = await doctor({ repoRoot: root, run, assumeYes: options.assumeYes });
+  const config = await doctor({
+    repoRoot: root,
+    run,
+    model: options.model,
+    assumeYes: options.assumeYes,
+  });
 
   await createBranch(branch, root);
   await run.log(`branch ${branch}`);
 
-  // Phase 4: one attempt, no repair. The loop that would react to a failure
-  // and call generate() again is phase 6.
-  const spec = await readFile(options.spec, "utf8");
-  await generate({ repoRoot: root, run, prompt: spec, attempt: 1 });
-
-  const failure = await runStages({
+  const result = await runLoop({
     config,
     repoRoot: root,
     run,
-    prefix: "attempt-1",
+    specPath: options.spec,
+    spec: await readFile(options.spec, "utf8"),
+    branch,
+    maxAttempts: options.maxAttempts,
+    model: options.model,
   });
 
-  if (failure !== null) {
-    await run.log(`attempt 1 ${describeFailure(failure)}`);
-    console.log(`\n${branch}\n${run.dir}`);
-    return 1;
-  }
-  await run.log("attempt 1 passed TEST");
-
-  // EVALUATE needs the app running; the server is stopped whatever happens,
-  // so the next attempt's build does not collide with it.
-  const server = await startServer(config.serve, root);
-  await run.log(`serving at ${server.url}`);
-  let outcome;
-  try {
-    outcome = await evaluate({
-      repoRoot: root,
-      run,
-      specPath: options.spec,
-      attempt: 1,
-      appUrl: server.url,
-    });
-  } finally {
-    await server.stop();
-  }
-
-  await run.log(
-    outcome.type === "no-verdict"
-      ? `attempt 1 produced no verdict: ${outcome.reason}`
-      : outcome.verdict.pass
-        ? "attempt 1 PASSED evaluation"
-        : `attempt 1 FAILED evaluation: ${outcome.verdict.failures.length} findings`,
+  console.log(
+    `\n${result.passed ? "passed" : "failed"} after ${result.attempts} attempt(s)\n` +
+      `${result.branch}\n${run.dir}`,
   );
-
-  console.log(`\n${branch}\n${run.dir}`);
-  return outcome.type === "verdict" && outcome.verdict.pass ? 0 : 1;
+  return result.passed ? 0 : 1;
 }
 
 try {
