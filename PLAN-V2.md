@@ -183,6 +183,14 @@ Each step ends runnable, and each carries the bound for what it introduces (see 
 5. `evaluate` — verdict arrives via the tool from a directory that cannot read the repo.
 6. `loop` — repair on failure, session resume, failure hashing and the fresh-session reset, budget.
 
+## Later
+
+Known improvements, parked deliberately. Each is small; none blocks a working loop.
+
+**Skip installs between runs, not just between attempts.** The install fingerprint currently lives in the run directory, so every run pays one `install` even when nothing changed. Moving it to `.harness/` would skip that — but a hand-deleted `node_modules`, or an install interrupted by Ctrl-C or by our own 20-minute bound, leaves the manifests byte-identical, so the fingerprint would match, the install would be skipped, and `build` would fail with `Cannot find module`. DOCTOR would then report "the project is already broken", which is false and sends you to the wrong place. The fix is to fold the package manager's own install-state marker into the fingerprint — `node_modules/.package-lock.json` (npm), `.yarn/install-state.gz` (yarn 3+), `node_modules/.modules.yaml` (pnpm) — since those appear only when an install *completed*. Roughly ten lines, and it makes the cross-run version safe.
+
+**A credentials preflight in DOCTOR.** There is none: on this machine there is no `ANTHROPIC_API_KEY` and nothing readable under `~/.claude`, so a filesystem check would report a false negative against a working setup. The first query is the real test, and it fails in seconds rather than the forty minutes DOCTOR exists to save — so the gap costs little. Worth revisiting only if a credentials failure ever surfaces somewhere expensive.
+
 ## Not in scope
 
 Multiple specs, scaffolding (`init`), other agent providers, model selection, benchmarking, reports beyond `result.json`, wallet-connected flows in the evaluator (the evaluator has no signer; spec items that need one are judged by what the UI offers).
