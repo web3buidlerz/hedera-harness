@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor } from "./doctor.js";
 import { describeTimings, runLoop } from "./loop.js";
@@ -77,16 +77,19 @@ async function main(argv: string[]): Promise<number> {
   await run.log(`run ${stamp}`);
   await run.log(`repo ${root}`);
   await run.log(`spec ${options.spec}`);
+  const archivedSpec = await run.archiveSpec(options.spec);
   const startedOn = await currentBranch(root);
   await run.log(`from ${startedOn} at ${(await headCommit(root)).slice(0, 12)}`);
   await run.log(`max-attempts ${options.maxAttempts}, model ${options.model}`);
 
   // DOCTOR runs before the branch exists: harness.yaml describes the project,
   // so it is committed where the project lives, not on a throwaway run branch.
+  const specInRepo = insideRepo(root, options.spec);
   const config = await doctor({
     repoRoot: root,
     run,
     model: options.model,
+    specPath: specInRepo,
     assumeYes: options.assumeYes,
   });
 
@@ -99,11 +102,12 @@ async function main(argv: string[]): Promise<number> {
       config,
       repoRoot: root,
       run,
-      specPath: options.spec,
-      spec: await readFile(options.spec, "utf8"),
+      specPath: archivedSpec,
+      spec: await readFile(archivedSpec, "utf8"),
       branch,
       maxAttempts: options.maxAttempts,
       model: options.model,
+      specInRepo,
     });
   } finally {
     // Back to the branch the run started from, so the next run branches from
@@ -120,6 +124,12 @@ async function main(argv: string[]): Promise<number> {
       `${result.branch}\n${run.dir}`,
   );
   return result.passed ? 0 : 1;
+}
+
+/** The spec's repo-relative path, or undefined when it lives outside the repo. */
+function insideRepo(root: string, spec: string): string | undefined {
+  const path = relative(root, spec);
+  return path === "" || path.startsWith("..") ? undefined : path;
 }
 
 try {

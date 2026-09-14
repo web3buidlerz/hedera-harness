@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { type Command, describe, runCommand } from "./commands.js";
 import { CONFIG_FILE, type HarnessConfig, readConfig, writeConfig } from "./config.js";
-import { commit, isClean } from "./git.js";
+import { commit, dirtyPaths } from "./git.js";
 import { type Proposal, resolveCommands } from "./resolve.js";
 import type { Run } from "./run.js";
 import { ServeError, startServer } from "./serve.js";
@@ -23,6 +23,8 @@ export interface DoctorOptions {
   repoRoot: string;
   run: Run;
   model: string;
+  /** Repo-relative path of the spec, when it lives inside the repo. Not treated as dirt. */
+  specPath?: string | undefined;
   /** Skip the first-run confirmation. Required when stdin is not a terminal. */
   assumeYes: boolean;
 }
@@ -37,10 +39,15 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
 
   await checkTooling(repoRoot, run);
 
-  if (!(await isClean(repoRoot))) {
+  const dirty = await dirtyPaths(
+    repoRoot,
+    options.specPath === undefined ? [] : [options.specPath],
+  );
+  if (dirty.length > 0) {
+    const shown = dirty.slice(0, 5).join(", ");
     throw new DoctorError(
-      "the working tree has uncommitted changes. Commit or stash them first — " +
-        "the run needs a known starting point to branch from.",
+      `the working tree has uncommitted changes (${shown}${dirty.length > 5 ? ", …" : ""}). ` +
+        `Commit or stash them first — the run needs a known starting point to branch from.`,
     );
   }
   await run.log("check tree clean");
