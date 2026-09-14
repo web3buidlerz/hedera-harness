@@ -107,7 +107,10 @@ export async function resolveCommands(
         allowedTools: [QUALIFIED_TOOL],
         permissionMode: "bypassPermissions",
         settingSources: [],
-        maxTurns: 4,
+        // Generous for what should be one tool call: the agent sometimes
+        // narrates its reading first, and running out of turns mid-thought
+        // fails a run before any work starts.
+        maxTurns: 12,
         abortController: controller,
         systemPrompt:
           "You identify how to build and run a JavaScript project from its manifests. " +
@@ -126,7 +129,10 @@ export async function resolveCommands(
     if (controller.signal.aborted) {
       throw new ResolutionError(`command resolution timed out after ${timeoutMs / 1000}s`);
     }
-    throw new ResolutionError((error as Error).message);
+    throw new ResolutionError(
+      `could not work out how to build this project: ${(error as Error).message}. ` +
+        `Write ${"harness.yaml"} by hand with install/build/test/serve and run again.`,
+    );
   } finally {
     clearTimeout(timer);
   }

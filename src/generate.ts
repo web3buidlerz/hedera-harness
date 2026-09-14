@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import { Progress, describeMessage, formatTokenCost } from "./progress.js";
 import type { Run } from "./run.js";
 
 /** See PLAN-V2 § Bounds. Starting points, to be tuned once there are real runs. */
@@ -36,6 +37,7 @@ export interface GenerateResult {
   sessionId: string | undefined;
   turns: number;
   costUsd: number | undefined;
+  durationMs: number;
 }
 
 /**
@@ -48,11 +50,10 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   const transcript = await run.path(`attempt-${attempt}`, "generate.jsonl");
   const plugins = await discoverPlugins();
 
-  await run.log(
-    plugins.length === 0
-      ? `generate attempt ${attempt} (no skill plugins at ${SKILLS_DIR})`
-      : `generate attempt ${attempt} with ${plugins.length} skill plugins`,
-  );
+  const progress = new Progress(`generate attempt ${attempt}`);
+  const plugged = plugins.length === 0 ? `no skill plugins at ${SKILLS_DIR}` : `${plugins.length} skill plugins`;
+  await run.log(`generate attempt ${attempt} with ${plugged}`);
+  progress.open(`${options.model}${options.resume === undefined ? "" : " · resumed"} · ${plugged}`);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WALL_CLOCK_MS);
@@ -93,6 +94,8 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
 
     for await (const message of conversation) {
       await appendFile(transcript, `${JSON.stringify(message)}\n`);
+      const step = describeMessage(message, repoRoot);
+      if (step !== null) progress.step(step.tool, step.argument);
       sessionId ??= message.session_id;
       if (message.type === "assistant") turns += 1;
       if (message.type === "result") {
@@ -110,11 +113,10 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
     clearTimeout(timer);
   }
 
-  await run.log(
-    `generate attempt ${attempt} done — ${turns} turns` +
-      (costUsd === undefined ? "" : `, $${costUsd.toFixed(2)}`),
-  );
-  return { sessionId, turns, costUsd };
+  const summary = `done — ${turns} turns, ${progress.toolCalls} tool calls${formatTokenCost(costUsd)}`;
+  const durationMs = progress.close(summary);
+  await run.log(`generate attempt ${attempt} ${summary}`);
+  return { sessionId, turns, costUsd, durationMs };
 }
 
 /** Every immediate subdirectory of the skills directory is offered as a plugin. */
