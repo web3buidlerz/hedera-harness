@@ -42,8 +42,7 @@ export class Progress {
   }
 
   private elapsed(): string {
-    const seconds = Math.floor((Date.now() - this.started) / 1000);
-    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`.padStart(5);
+    return formatClock(Date.now() - this.started);
   }
 }
 
@@ -95,6 +94,12 @@ function subjectOf(input: unknown): string {
 function clip(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length <= ARGUMENT_WIDTH ? flat : `${flat.slice(0, ARGUMENT_WIDTH - 1)}…`;
+}
+
+/** `  0:04` — a running clock, right-aligned so rows line up. */
+export function formatClock(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`.padStart(5);
 }
 
 /**

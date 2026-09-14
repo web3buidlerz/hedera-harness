@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor } from "./doctor.js";
 import { describeTimings, runLoop } from "./loop.js";
-import { createBranch, currentBranch, headCommit, repoRoot } from "./git.js";
+import { createBranch, currentBranch, headCommit, repoRoot, switchBranch } from "./git.js";
 import { Run, ensureExcluded, timestamp } from "./run.js";
 
 const USAGE = `usage: harness run --spec <path> [--max-attempts N] [--yes]
@@ -77,7 +77,8 @@ async function main(argv: string[]): Promise<number> {
   await run.log(`run ${stamp}`);
   await run.log(`repo ${root}`);
   await run.log(`spec ${options.spec}`);
-  await run.log(`from ${await currentBranch(root)} at ${(await headCommit(root)).slice(0, 12)}`);
+  const startedOn = await currentBranch(root);
+  await run.log(`from ${startedOn} at ${(await headCommit(root)).slice(0, 12)}`);
   await run.log(`max-attempts ${options.maxAttempts}, model ${options.model}`);
 
   // DOCTOR runs before the branch exists: harness.yaml describes the project,
@@ -92,16 +93,26 @@ async function main(argv: string[]): Promise<number> {
   await createBranch(branch, root);
   await run.log(`branch ${branch}`);
 
-  const result = await runLoop({
-    config,
-    repoRoot: root,
-    run,
-    specPath: options.spec,
-    spec: await readFile(options.spec, "utf8"),
-    branch,
-    maxAttempts: options.maxAttempts,
-    model: options.model,
-  });
+  let result;
+  try {
+    result = await runLoop({
+      config,
+      repoRoot: root,
+      run,
+      specPath: options.spec,
+      spec: await readFile(options.spec, "utf8"),
+      branch,
+      maxAttempts: options.maxAttempts,
+      model: options.model,
+    });
+  } finally {
+    // Back to the branch the run started from, so the next run branches from
+    // the same base instead of stacking on this one — and so a run leaves your
+    // working state where it found it. The work is on `branch`, named below.
+    await switchBranch(startedOn, root).catch(async (error: Error) => {
+      await run.log(`could not return to ${startedOn}: ${error.message}`);
+    });
+  }
 
   console.log(
     `\n${result.passed ? "passed" : "failed"} after ${result.attempts} attempt(s)\n` +

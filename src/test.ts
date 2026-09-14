@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Command, type CommandResult, describe, runCommand } from "./commands.js";
+import { formatClock } from "./progress.js";
 import type { HarnessConfig } from "./config.js";
 import type { Run } from "./run.js";
 
@@ -89,7 +90,9 @@ async function runStage(
   { repoRoot, run, prefix }: StageOptions,
 ): Promise<StageFailure | null> {
   await run.log(`${prefix} ${stage}: ${describe(command)}`);
-  const result = await runCommand(command, repoRoot, COMMAND_TIMEOUT_MS);
+  const result = await runCommand(command, repoRoot, COMMAND_TIMEOUT_MS, (elapsedMs, lastLine) => {
+    console.log(`  ${formatClock(elapsedMs)}  ${stage.padEnd(7)} ${lastLine || "running…"}`);
+  });
 
   const artifact = join(prefix, `${stage}.txt`);
   await run.write(artifact, result.output);
