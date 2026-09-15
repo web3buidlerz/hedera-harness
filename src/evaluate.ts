@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { Progress, describeMessage } from "./progress.js";
 import type { Run } from "./run.js";
 
 /** See PLAN-V2 § Bounds — shorter than GENERATE: judging is cheaper than building. */
@@ -120,6 +121,8 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WALL_CLOCK_MS);
   const transcript = await run.path(`attempt-${attempt}`, "evaluate.jsonl");
+  const progress = new Progress(`evaluate attempt ${attempt}`);
+  progress.open(`${options.model} · blind · ${appUrl}`);
 
   // The agent's Bash resolves `playwright-cli` from the harness's own install,
   // so the target repo does not have to depend on it.
@@ -151,6 +154,8 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
 
     for await (const message of conversation) {
       await appendFile(transcript, `${JSON.stringify(message)}\n`);
+      const step = describeMessage(message, repoRoot);
+      if (step !== null) progress.step(step.tool, step.argument);
     }
   } catch (error) {
     if (controller.signal.aborted) {
@@ -168,6 +173,13 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
   await cp(evidenceDir, await run.path(`attempt-${attempt}`, "evidence"), { recursive: true });
 
   const outcome = adjudicate(captured, workspace);
+  progress.close(
+    outcome.type === "no-verdict"
+      ? "no verdict"
+      : outcome.verdict.pass
+        ? "verdict: pass"
+        : `verdict: fail — ${outcome.verdict.failures.length} finding(s)`,
+  );
   if (outcome.type === "verdict") {
     await writeFile(
       await run.path(`attempt-${attempt}`, "verdict.json"),

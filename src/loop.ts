@@ -4,6 +4,7 @@ import type { HarnessConfig } from "./config.js";
 import { type Outcome, evaluate } from "./evaluate.js";
 import { generate } from "./generate.js";
 import { commitWork } from "./git.js";
+import { formatDuration } from "./progress.js";
 import type { Run } from "./run.js";
 import { startServer } from "./serve.js";
 import { type StageFailure, describeFailure, runStages } from "./test.js";
@@ -26,6 +27,14 @@ export interface LoopResult {
   passed: boolean;
   attempts: number;
   branch: string;
+  /** Wall-clock per stage across the whole run, so the summary says where time went. */
+  timings: Timings;
+}
+
+export interface Timings {
+  generateMs: number;
+  testMs: number;
+  evaluateMs: number;
 }
 
 /** What an attempt failed on, in the shape the diagram uses for `feedback.json`. */
@@ -52,6 +61,7 @@ export class AbortRun extends Error {
 export async function runLoop(options: LoopOptions): Promise<LoopResult> {
   const { config, repoRoot, run, maxAttempts } = options;
 
+  const timings: Timings = { generateMs: 0, testMs: 0, evaluateMs: 0 };
   let prompt = options.spec;
   let session: string | undefined;
   let previous: Set<string> = new Set();
@@ -60,15 +70,16 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const generated = await generate({ repoRoot, run, prompt, attempt, resume: session, model: options.model });
     session = generated.sessionId;
+    timings.generateMs += generated.durationMs;
 
-    const feedback = await assess(options, attempt);
+    const feedback = await assess(options, attempt, timings);
     history.push({ attempt, feedback });
     await writeFeedback(run, attempt, feedback);
 
     if (feedback.ok) {
       await report(run, attempt, feedback, previous);
-      await writeResult(run, { passed: true, attempts: attempt, branch: options.branch });
-      return { passed: true, attempts: attempt, branch: options.branch };
+      await writeResult(run, { passed: true, attempts: attempt, branch: options.branch, timings });
+      return { passed: true, attempts: attempt, branch: options.branch, timings };
     }
 
     const repeated = await report(run, attempt, feedback, previous);
@@ -86,8 +97,8 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     prompt = repairPrompt(feedback);
   }
 
-  await writeResult(run, { passed: false, attempts: history.length, branch: options.branch });
-  return { passed: false, attempts: history.length, branch: options.branch };
+  await writeResult(run, { passed: false, attempts: history.length, branch: options.branch, timings });
+  return { passed: false, attempts: history.length, branch: options.branch, timings };
 }
 
 /**
@@ -95,19 +106,23 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
  * a browser. The attempt is committed once TEST is green, so the code the
  * evaluator judges is the code on the branch.
  */
-async function assess(options: LoopOptions, attempt: number): Promise<Feedback> {
+async function assess(options: LoopOptions, attempt: number, timings: Timings): Promise<Feedback> {
   const { config, repoRoot, run } = options;
 
+  const testStarted = Date.now();
   const failure = await runStages({ config, repoRoot, run, prefix: `attempt-${attempt}` });
+  timings.testMs += Date.now() - testStarted;
   if (failure !== null) return fromStage(failure);
 
   const commit = await commitWork(`harness: attempt ${attempt}`, repoRoot);
   await run.log(commit === null ? `attempt ${attempt} changed nothing` : `attempt ${attempt} committed ${commit.slice(0, 12)}`);
 
   const server = await startServer(config.serve, repoRoot);
+  const evaluateStarted = Date.now();
   try {
     return fromVerdict(await withOneRetry(options, attempt, server.url));
   } finally {
+    timings.evaluateMs += Date.now() - evaluateStarted;
     await server.stop();
   }
 }
@@ -223,7 +238,16 @@ async function writeFeedback(run: Run, attempt: number, feedback: Feedback): Pro
 
 async function writeResult(
   run: Run,
-  result: { passed: boolean; attempts: number; branch: string },
+  result: { passed: boolean; attempts: number; branch: string; timings: Timings },
 ): Promise<void> {
   await run.writeResult(result);
+}
+
+/** `generate 7:46 · test 0:52 · evaluate 3:28` */
+export function describeTimings(timings: Timings): string {
+  return [
+    `generate ${formatDuration(timings.generateMs)}`,
+    `test ${formatDuration(timings.testMs)}`,
+    `evaluate ${formatDuration(timings.evaluateMs)}`,
+  ].join(" · ");
 }

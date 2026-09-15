@@ -4,7 +4,7 @@ import { constants } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor } from "./doctor.js";
-import { runLoop } from "./loop.js";
+import { describeTimings, runLoop } from "./loop.js";
 import { createBranch, currentBranch, headCommit, repoRoot } from "./git.js";
 import { Run, ensureExcluded, timestamp } from "./run.js";
 
@@ -105,6 +105,7 @@ async function main(argv: string[]): Promise<number> {
 
   console.log(
     `\n${result.passed ? "passed" : "failed"} after ${result.attempts} attempt(s)\n` +
+      `${describeTimings(result.timings)}\n` +
       `${result.branch}\n${run.dir}`,
   );
   return result.passed ? 0 : 1;
