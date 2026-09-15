@@ -7,7 +7,8 @@ import { CONFIG_FILE, readConfig } from "./config.js";
 import { doctor } from "./doctor.js";
 import { initialise } from "./init.js";
 import { describeTimings, runLoop } from "./loop.js";
-import { createBranch, currentBranch, headCommit, repoRoot, switchBranch } from "./git.js";
+import { killTrackedChildren } from "./commands.js";
+import { commitWork, createBranch, currentBranch, headCommit, repoRoot, switchBranch } from "./git.js";
 import { Run, ensureExcluded, timestamp } from "./run.js";
 
 const USAGE = `usage: harness init [name] [--model NAME] [--yes]
@@ -25,6 +26,59 @@ Run from inside the target repository.
   --yes               skip the first-run command confirmation`;
 
 class UsageError extends Error {}
+
+/**
+ * What an interrupt needs in order to leave things tidy. Filled in as the run
+ * acquires it, so a Ctrl-C before the branch exists still kills any children.
+ */
+interface Interruptible {
+  repoRoot?: string;
+  run?: Run;
+  branch?: string;
+  startedOn?: string;
+  specInRepo?: string | undefined;
+}
+
+const context: Interruptible = {};
+let interrupting = false;
+
+/**
+ * Ctrl-C used to tear the process down without unwinding the `finally` blocks
+ * that stop the dev server and return you to your branch — leaving a server
+ * holding the port and a dirty tree on a harness branch, which is exactly the
+ * state that makes the next run refuse to start.
+ *
+ * The attempt is committed rather than discarded, for the same reason every
+ * other attempt is: a clean tree is what lets you run again, and the work is
+ * on a throwaway branch you can delete.
+ */
+async function cancel(): Promise<never> {
+  killTrackedChildren();
+
+  const { repoRoot, run, startedOn, branch } = context;
+  if (repoRoot !== undefined) {
+    await commitWork(
+      "harness: cancelled",
+      repoRoot,
+      context.specInRepo === undefined ? [] : [context.specInRepo],
+    ).catch(() => null);
+    if (startedOn !== undefined) await switchBranch(startedOn, repoRoot).catch(() => undefined);
+  }
+  if (run !== undefined) {
+    await run.writeResult({ passed: false, cancelled: true, branch: branch ?? null }).catch(
+      () => undefined,
+    );
+    console.error(`\ncancelled${branch === undefined ? "" : `\n${branch}`}\n${run.dir}`);
+  }
+  process.exit(130);
+}
+
+function onInterrupt(): void {
+  if (interrupting) process.exit(130);
+  interrupting = true;
+  console.error("\ninterrupted — cleaning up (Ctrl-C again to quit now)");
+  void cancel();
+}
 
 type Command = "init" | "run";
 
@@ -95,22 +149,26 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const root = await repoRoot(process.cwd());
+  context.repoRoot = root;
   await ensureExcluded(root);
 
   const stamp = timestamp();
   const run = await Run.create(root, stamp);
   const branch = `harness/${stamp}`;
+  context.run = run;
 
   await run.log(`run ${stamp}`);
   await run.log(`repo ${root}`);
   if (options.command === "run") await run.log(`spec ${options.spec}`);
   const startedOn = await currentBranch(root);
+  context.startedOn = startedOn;
   await run.log(`from ${startedOn} at ${(await headCommit(root)).slice(0, 12)}`);
   await run.log(`max-attempts ${options.maxAttempts}, model ${options.model}`);
 
   // DOCTOR runs before the branch exists: harness.yaml describes the project,
   // so it is committed where the project lives, not on a throwaway run branch.
   const specInRepo = options.command === "run" ? insideRepo(root, options.spec) : undefined;
+  context.specInRepo = specInRepo;
   await doctor({
     repoRoot: root,
     run,
@@ -133,6 +191,7 @@ async function main(argv: string[]): Promise<number> {
   const archivedSpec = await run.archiveSpec(options.spec);
 
   await createBranch(branch, root);
+  context.branch = branch;
   await run.log(`branch ${branch}`);
 
   let result;
@@ -170,6 +229,9 @@ function insideRepo(root: string, spec: string): string | undefined {
   const path = relative(root, spec);
   return path === "" || path.startsWith("..") ? undefined : path;
 }
+
+process.on("SIGINT", onInterrupt);
+process.on("SIGTERM", onInterrupt);
 
 try {
   process.exitCode = await main(process.argv.slice(2));

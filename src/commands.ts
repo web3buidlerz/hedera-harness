@@ -17,6 +17,27 @@ export interface CommandResult {
   durationMs: number;
 }
 
+/**
+ * Every detached child currently running. A command and a dev server both
+ * outlive their parent by design — which means an interrupted run leaves them
+ * holding a port unless something kills them deliberately.
+ */
+const live = new Set<number>();
+
+export function trackChild(pid: number | undefined): void {
+  if (pid !== undefined) live.add(pid);
+}
+
+export function untrackChild(pid: number | undefined): void {
+  if (pid !== undefined) live.delete(pid);
+}
+
+/** Kills everything still running. Called when a run is interrupted. */
+export function killTrackedChildren(): void {
+  for (const pid of live) killGroup(pid);
+  live.clear();
+}
+
 /** Called while a command is still running, so minutes of silence become visible. */
 export type Tick = (elapsedMs: number, lastLine: string) => void;
 
@@ -83,6 +104,7 @@ export async function runCommand(
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    trackChild(child.pid);
     let timedOut = false;
     let lastLine = "";
     const timer = setTimeout(() => {
@@ -109,6 +131,7 @@ export async function runCommand(
 
     const finish = (code: number | null) => {
       clearTimeout(timer);
+      untrackChild(child.pid);
       if (heartbeat !== undefined) clearInterval(heartbeat);
       resolve({
         command,
