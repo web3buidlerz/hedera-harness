@@ -62,6 +62,11 @@ export async function createBranch(name: string, cwd: string): Promise<void> {
   await git(["switch", "--create", name], cwd);
 }
 
+/** Switches to an existing branch. */
+export async function switchBranch(name: string, cwd: string): Promise<void> {
+  await git(["switch", name], cwd);
+}
+
 /** Stages `paths` and commits them. Nothing else in the tree is touched. */
 export async function commit(paths: string[], message: string, cwd: string): Promise<void> {
   await git(["add", "--", ...paths], cwd);

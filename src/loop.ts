@@ -112,10 +112,20 @@ async function assess(options: LoopOptions, attempt: number, timings: Timings): 
   const testStarted = Date.now();
   const failure = await runStages({ config, repoRoot, run, prefix: `attempt-${attempt}` });
   timings.testMs += Date.now() - testStarted;
-  if (failure !== null) return fromStage(failure);
 
-  const commit = await commitWork(`harness: attempt ${attempt}`, repoRoot);
-  await run.log(commit === null ? `attempt ${attempt} changed nothing` : `attempt ${attempt} committed ${commit.slice(0, 12)}`);
+  // Every attempt is committed, passing or not. A failing attempt left
+  // uncommitted used to lock the harness out of itself: the next run hit
+  // DOCTOR's clean-tree check and refused, with the cleanup left to you.
+  // It is also the change you most want to read after a failure.
+  const outcome = failure === null ? "passed tests" : `failed ${failure.stage}`;
+  const commit = await commitWork(`harness: attempt ${attempt} (${outcome})`, repoRoot);
+  await run.log(
+    commit === null
+      ? `attempt ${attempt} changed nothing`
+      : `attempt ${attempt} committed ${commit.slice(0, 12)}`,
+  );
+
+  if (failure !== null) return fromStage(failure);
 
   const server = await startServer(config.serve, repoRoot);
   const evaluateStarted = Date.now();

@@ -17,6 +17,12 @@ export interface CommandResult {
   durationMs: number;
 }
 
+/** Called while a command is still running, so minutes of silence become visible. */
+export type Tick = (elapsedMs: number, lastLine: string) => void;
+
+/** How often a running command reports in. */
+const TICK_MS = 10_000;
+
 export function describe(command: Command): string {
   return command.cwd ? `${command.run} (in ${command.cwd})` : command.run;
 }
@@ -63,6 +69,7 @@ export async function runCommand(
   command: Command,
   repoRoot: string,
   timeoutMs: number,
+  onTick?: Tick,
 ): Promise<CommandResult> {
   const cwd = command.cwd ? join(repoRoot, command.cwd) : repoRoot;
   const started = Date.now();
@@ -77,16 +84,32 @@ export async function runCommand(
     });
 
     let timedOut = false;
+    let lastLine = "";
     const timer = setTimeout(() => {
       timedOut = true;
       killGroup(child.pid);
     }, timeoutMs);
 
-    child.stdout.on("data", (chunk: Buffer) => output.push(chunk.toString()));
-    child.stderr.on("data", (chunk: Buffer) => output.push(chunk.toString()));
+    // `yarn install` on a real monorepo is minutes of nothing. Reporting the
+    // command's own most recent line says both that it is alive and where it is.
+    const heartbeat =
+      onTick === undefined
+        ? undefined
+        : setInterval(() => onTick(Date.now() - started, lastLine), TICK_MS);
+
+    const collect = (chunk: Buffer) => {
+      const text = chunk.toString();
+      output.push(text);
+      const lines = text.split("\n").filter((line) => line.trim() !== "");
+      const latest = lines[lines.length - 1];
+      if (latest !== undefined) lastLine = latest.trim();
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
 
     const finish = (code: number | null) => {
       clearTimeout(timer);
+      if (heartbeat !== undefined) clearInterval(heartbeat);
       resolve({
         command,
         code,
