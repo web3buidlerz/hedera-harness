@@ -8,6 +8,7 @@ import { commit, dirtyPaths } from "./git.js";
 import { type Proposal, resolveCommands } from "./resolve.js";
 import type { Run } from "./run.js";
 import { ServeError, startServer } from "./serve.js";
+import { dim, heading, row, tick, warn } from "./style.js";
 import { describeFailure, runStages } from "./test.js";
 
 /** See PLAN-V2 § Bounds. Starting points, to be tuned once there are real runs. */
@@ -38,6 +39,7 @@ export interface DoctorOptions {
 export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
   const { repoRoot, run } = options;
 
+  console.log(heading("doctor"));
   await checkTooling(repoRoot, run);
 
   const dirty = await dirtyPaths(
@@ -51,14 +53,14 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
         `Commit or stash them first — the run needs a known starting point to branch from.`,
     );
   }
-  await run.log("check tree clean");
+  await run.log("check tree clean", tick("tree clean"));
 
   await checkSkills(repoRoot, run);
 
   const existing = await readConfig(repoRoot);
   const proposal = existing === null ? await resolve(options) : null;
   const config = existing ?? proposal!.config;
-  if (existing !== null) await run.log(`check commands from ${CONFIG_FILE}`);
+  if (existing !== null) await run.log(`check commands from ${CONFIG_FILE}`, tick(`commands from ${CONFIG_FILE}`));
 
   // Every run, not just the first. On a first run this proves the resolution
   // works before it is written down; on every run it proves the repo was
@@ -69,7 +71,7 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
   if (proposal !== null) {
     await writeConfig(repoRoot, config, proposal.notes);
     await commit([CONFIG_FILE], `chore: record harness commands in ${CONFIG_FILE}`, repoRoot);
-    await run.log(`check wrote and committed ${CONFIG_FILE}`);
+    await run.log(`check wrote and committed ${CONFIG_FILE}`, tick(`wrote and committed ${CONFIG_FILE}`));
   }
 
   return config;
@@ -90,17 +92,20 @@ async function checkSkills(repoRoot: string, run: Run): Promise<void> {
   const found = entries.filter((entry) => existsSync(join(skillsDir, entry, "SKILL.md"))).length;
 
   if (found > 0) {
-    await run.log(`check ${found} project skills in .claude/skills`);
+    const what = `${found} project skills in .claude/skills`;
+    await run.log(`check ${what}`, tick(what));
     return;
   }
   if (process.env["HEDERA_SKILLS_DIR"] !== undefined) {
-    await run.log(`check skills from HEDERA_SKILLS_DIR`);
+    await run.log("check skills from HEDERA_SKILLS_DIR", tick("skills from HEDERA_SKILLS_DIR"));
     return;
   }
+  const remedy = "claude plugin marketplace add hedera-dev/hedera-skills";
   await run.log(
     "check no project skills — this project ships none in .claude/skills, so the " +
-      "agent works without Hedera-specific knowledge. Add them with: " +
-      "claude plugin marketplace add hedera-dev/hedera-skills",
+      `agent works without Hedera-specific knowledge. Add them with: ${remedy}`,
+    `${warn("no project skills — the agent works without Hedera-specific knowledge")}\n` +
+      `  ${dim(`add them with: ${remedy}`)}`,
   );
 }
 
@@ -112,7 +117,7 @@ async function checkTooling(repoRoot: string, run: Run): Promise<void> {
   if (missing.length > 0) {
     throw new DoctorError(`not on PATH: ${missing.join(", ")}`);
   }
-  await run.log("check tooling");
+  await run.log("check tooling", tick("tooling"));
 }
 
 async function exists(binary: string, cwd: string): Promise<boolean> {
@@ -133,11 +138,12 @@ async function resolve(options: DoctorOptions): Promise<Proposal> {
     if (problem !== null) throw new DoctorError(`proposed ${name} command ${problem}`);
   }
 
-  console.log(`\n${CONFIG_FILE} for this project:\n`);
+  console.log(heading(CONFIG_FILE, "proposed for this project"));
   for (const [name, command] of entries(config)) {
-    console.log(`  ${name.padEnd(8)}${command === null ? "(none)" : describe(command)}`);
-    console.log(`  ${" ".repeat(8)}${notes[name as keyof typeof notes] ?? ""}\n`);
+    console.log(`\n  ${name.padEnd(8)}${command === null ? dim("(none)") : describe(command)}`);
+    console.log(`  ${" ".repeat(8)}${dim(notes[name as keyof typeof notes] ?? "")}`);
   }
+  console.log("");
 
   await confirm(options);
   return proposal;
@@ -195,7 +201,10 @@ async function verifyByRunning(
   // `serve` is the one command the stages above cannot check: it never exits.
   // Starting it here turns a wrong dev-server command into a four-second
   // failure instead of one discovered after a generation has been paid for.
-  await run.log(`baseline serve: ${describe(config.serve)}`);
+  await run.log(
+    `baseline serve: ${describe(config.serve)}`,
+    row("serve", describe(config.serve)),
+  );
   let server;
   try {
     server = await startServer(config.serve, repoRoot);
@@ -211,7 +220,7 @@ async function verifyByRunning(
   }
 
   await run.write(join("baseline", "serve.txt"), server.output());
-  await run.log(`baseline serve answered at ${server.url}`);
+  await run.log(`baseline serve answered at ${server.url}`, tick(`serve answered at ${server.url}`));
   await server.stop();
 }
 

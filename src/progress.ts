@@ -1,3 +1,5 @@
+import { dim, heading } from "./style.js";
+
 /** Width to clip a tool's argument to, so one call is always one line. */
 const ARGUMENT_WIDTH = 96;
 
@@ -19,21 +21,29 @@ export class Progress {
 
   constructor(private readonly label: string) {}
 
-  /** `generate attempt 2 · sonnet · 8 plugins` */
+  /** `GENERATE  attempt 2 · sonnet · 8 plugins` */
   open(detail: string): void {
-    console.log(`\n${this.label}  ${detail}`);
+    console.log(heading(this.label, detail));
   }
 
-  /** One line per tool call: elapsed, tool, and what it was pointed at. */
+  /**
+   * One line per tool call: elapsed, tool, and what it was pointed at. The
+   * tool name is the only part at full strength — it is what the eye scans for
+   * when skimming back through several hundred of these.
+   */
   step(tool: string, argument: string): void {
     this.calls += 1;
-    console.log(`  ${this.elapsed()}  ${tool.padEnd(7)} ${clip(argument)}`);
+    console.log(`  ${dim(this.elapsed())}  ${tool.padEnd(7)} ${dim(clip(argument))}`);
   }
 
-  /** Closing line, and the elapsed time the caller records against the stage. */
+  /**
+   * Closing line, and the elapsed time the caller records against the stage.
+   * `summary` is printed as given: EVALUATE's is the verdict, which is the one
+   * thing in a stage that should not be toned down.
+   */
   close(summary: string): number {
     const ms = Date.now() - this.started;
-    console.log(`  ${this.elapsed()}  ${summary}`);
+    console.log(`  ${dim(this.elapsed())}  ${summary}`);
     return ms;
   }
 
