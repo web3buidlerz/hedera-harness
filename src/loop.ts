@@ -21,6 +21,8 @@ export interface LoopOptions {
   branch: string;
   maxAttempts: number;
   model: string;
+  /** Repo-relative spec path, when it lives in the repo. Never committed as work. */
+  specInRepo?: string | undefined;
 }
 
 export interface LoopResult {
@@ -118,7 +120,11 @@ async function assess(options: LoopOptions, attempt: number, timings: Timings): 
   // DOCTOR's clean-tree check and refused, with the cleanup left to you.
   // It is also the change you most want to read after a failure.
   const outcome = failure === null ? "passed tests" : `failed ${failure.stage}`;
-  const commit = await commitWork(`harness: attempt ${attempt} (${outcome})`, repoRoot);
+  const commit = await commitWork(
+    `harness: attempt ${attempt} (${outcome})`,
+    repoRoot,
+    options.specInRepo === undefined ? [] : [options.specInRepo],
+  );
   await run.log(
     commit === null
       ? `attempt ${attempt} changed nothing`

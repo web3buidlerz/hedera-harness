@@ -44,9 +44,17 @@ export async function currentBranch(cwd: string): Promise<string> {
   return git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
 }
 
-/** True when nothing is staged, modified or untracked. */
-export async function isClean(cwd: string): Promise<boolean> {
-  return (await git(["status", "--porcelain"], cwd)) === "";
+/**
+ * Paths changed in the work tree, minus `ignoring`.
+ *
+ * The clean-tree check exists to guarantee a known starting point for the
+ * project's code. A spec file is an input to the run, not a change to the
+ * project, so it does not count as dirt — writing one and immediately running
+ * used to be refused.
+ */
+export async function dirtyPaths(cwd: string, ignoring: string[] = []): Promise<string[]> {
+  const changed = await changedPaths(cwd);
+  return changed.filter((path) => !ignoring.includes(path));
 }
 
 /**
@@ -74,6 +82,10 @@ export async function commit(paths: string[], message: string, cwd: string): Pro
 }
 
 /**
+ * Inputs to the run are never committed as its work — a spec living in the
+ * repo would otherwise be swept onto the run branch and then deleted from the
+ * working tree when the run switched back, losing the file the user wrote.
+ *
  * A dotenv file must never enter git history, whatever the working tree holds.
  * The generator's hook refuses the obvious writes, but a command string cannot
  * be pattern-matched against an interpreter — an agent asked for a `.env` got
@@ -107,9 +119,13 @@ export async function changedPaths(cwd: string): Promise<string[]> {
  * or null when there was nothing to commit — an attempt that changed no files
  * is a real outcome, not an error.
  */
-export async function commitWork(message: string, cwd: string): Promise<string | null> {
+export async function commitWork(
+  message: string,
+  cwd: string,
+  exclude: string[] = [],
+): Promise<string | null> {
   const paths = await changedPaths(cwd);
-  const safe = paths.filter((path) => !SECRET_FILE.test(path));
+  const safe = paths.filter((path) => !SECRET_FILE.test(path) && !exclude.includes(path));
   if (safe.length === 0) return null;
 
   await git(["add", "--", ...safe], cwd);

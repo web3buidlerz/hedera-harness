@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isTracked } from "./git.js";
 
@@ -64,6 +64,17 @@ export class Run {
   async path(...segments: string[]): Promise<string> {
     const target = join(this.dir, ...segments);
     await mkdir(join(target, ".."), { recursive: true });
+    return target;
+  }
+
+  /**
+   * Copies the spec into the run and returns the copy's path. The run then
+   * records exactly what it was asked to build, and a spec edited while a long
+   * run is in flight cannot change what the evaluator is judging against.
+   */
+  async archiveSpec(source: string): Promise<string> {
+    const target = await this.path("spec.md");
+    await copyFile(source, target);
     return target;
   }
 
