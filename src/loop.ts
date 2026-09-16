@@ -64,6 +64,9 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
   const { config, repoRoot, run, maxAttempts } = options;
 
   const timings: Timings = { generateMs: 0, testMs: 0, evaluateMs: 0 };
+  // Recorded once: what the agent could reach. A run that behaves differently
+  // from another is usually a different skill set, and this is the record of it.
+  let skills: string[] = [];
   let prompt = options.spec;
   let session: string | undefined;
   let previous: Set<string> = new Set();
@@ -73,6 +76,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     const generated = await generate({ repoRoot, run, prompt, attempt, resume: session, model: options.model });
     session = generated.sessionId;
     timings.generateMs += generated.durationMs;
+    if (skills.length === 0) skills = generated.skills;
 
     const feedback = await assess(options, attempt, timings);
     history.push({ attempt, feedback });
@@ -80,7 +84,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
 
     if (feedback.ok) {
       await report(run, attempt, feedback, previous);
-      await writeResult(run, { passed: true, attempts: attempt, branch: options.branch, timings });
+      await writeResult(run, { passed: true, attempts: attempt, branch: options.branch, timings, skills });
       return { passed: true, attempts: attempt, branch: options.branch, timings };
     }
 
@@ -99,7 +103,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     prompt = repairPrompt(feedback);
   }
 
-  await writeResult(run, { passed: false, attempts: history.length, branch: options.branch, timings });
+  await writeResult(run, { passed: false, attempts: history.length, branch: options.branch, timings, skills });
   return { passed: false, attempts: history.length, branch: options.branch, timings };
 }
 
@@ -254,7 +258,7 @@ async function writeFeedback(run: Run, attempt: number, feedback: Feedback): Pro
 
 async function writeResult(
   run: Run,
-  result: { passed: boolean; attempts: number; branch: string; timings: Timings },
+  result: { passed: boolean; attempts: number; branch: string; timings: Timings; skills: string[] },
 ): Promise<void> {
   await run.writeResult(result);
 }

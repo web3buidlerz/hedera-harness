@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { type Command, describe, runCommand } from "./commands.js";
@@ -52,6 +53,8 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
   }
   await run.log("check tree clean");
 
+  await checkSkills(repoRoot, run);
+
   const existing = await readConfig(repoRoot);
   const proposal = existing === null ? await resolve(options) : null;
   const config = existing ?? proposal!.config;
@@ -70,6 +73,35 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
   }
 
   return config;
+}
+
+/**
+ * A scaffolded project carries its own skills in `.claude/skills/`, which the
+ * generator loads automatically. A project without them still runs, just with
+ * less Hedera knowledge behind it — worth saying out loud rather than leaving
+ * the operator to wonder why the output is thin.
+ */
+async function checkSkills(repoRoot: string, run: Run): Promise<void> {
+  // Counted by the SKILL.md inside, not by directory type: a scaffolded
+  // project symlinks .claude/skills/* at .agents/skills/*, and readdir reports
+  // a symlink as a symlink, so an isDirectory() check reports none of them.
+  const skillsDir = join(repoRoot, ".claude", "skills");
+  const entries = await readdir(skillsDir).catch(() => [] as string[]);
+  const found = entries.filter((entry) => existsSync(join(skillsDir, entry, "SKILL.md"))).length;
+
+  if (found > 0) {
+    await run.log(`check ${found} project skills in .claude/skills`);
+    return;
+  }
+  if (process.env["HEDERA_SKILLS_DIR"] !== undefined) {
+    await run.log(`check skills from HEDERA_SKILLS_DIR`);
+    return;
+  }
+  await run.log(
+    "check no project skills — this project ships none in .claude/skills, so the " +
+      "agent works without Hedera-specific knowledge. Add them with: " +
+      "claude plugin marketplace add hedera-dev/hedera-skills",
+  );
 }
 
 async function checkTooling(repoRoot: string, run: Run): Promise<void> {

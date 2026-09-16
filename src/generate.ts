@@ -1,5 +1,4 @@
 import { appendFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -11,8 +10,17 @@ const WALL_CLOCK_MS = 60 * 60_000;
 const MAX_TURNS = 300;
 const MAX_BUDGET_USD = 10;
 
-/** Where the Hedera skill plugins live. Machine config, so an env var, not `harness.yaml`. */
-const SKILLS_DIR = process.env["HEDERA_SKILLS_DIR"] ?? join(homedir(), "Work/hedera-skills/plugins");
+/**
+ * Extra skill plugins to load, for a project that does not ship its own.
+ *
+ * Unset by default and deliberately so. A scaffolded project carries its
+ * skills in `.claude/skills/`, which `settingSources: ["project"]` already
+ * loads — versioned with the repo, identical for every teammate, nothing to
+ * install. Pointing at a marketplace checkout instead duplicated fifteen of
+ * those twenty-five skills under a second name and added six about authoring
+ * plugins and harness recipes, which is not the job the generator is doing.
+ */
+const SKILLS_DIR = process.env["HEDERA_SKILLS_DIR"];
 
 export class GenerateError extends Error {
   constructor(message: string) {
@@ -35,6 +43,8 @@ export interface GenerateOptions {
 export interface GenerateResult {
   /** Pass back as `resume` so the next attempt keeps its context. */
   sessionId: string | undefined;
+  /** Every skill the agent could reach, whatever its source. Recorded per run. */
+  skills: string[];
   turns: number;
   costUsd: number | undefined;
   durationMs: number;
@@ -51,16 +61,16 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   const plugins = await discoverPlugins();
 
   const progress = new Progress(`generate attempt ${attempt}`);
-  const plugged = plugins.length === 0 ? `no skill plugins at ${SKILLS_DIR}` : `${plugins.length} skill plugins`;
-  await run.log(`generate attempt ${attempt} with ${plugged}`);
-  progress.open(`${options.model}${options.resume === undefined ? "" : " · resumed"} · ${plugged}`);
+  await run.log(`generate attempt ${attempt}`);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WALL_CLOCK_MS);
 
   let sessionId: string | undefined;
+  let skills: string[] = [];
   let turns = 0;
   let costUsd: number | undefined;
+  let announced = false;
 
   try {
     const conversation = query({
@@ -94,6 +104,18 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
 
     for await (const message of conversation) {
       await appendFile(transcript, `${JSON.stringify(message)}\n`);
+
+      // The init message is the only place that says what the agent can
+      // actually reach — project skills, plugin skills and built-ins together.
+      // Reporting a plugin count was not just unhelpful, it was wrong: the
+      // first real run said "8 skill plugins" while 60 skills were active.
+      if (!announced && message.type === "system" && message.subtype === "init") {
+        skills = ((message as { skills?: unknown }).skills ?? []) as string[];
+        announced = true;
+        const resumed = options.resume === undefined ? "" : " · resumed";
+        progress.open(`${options.model}${resumed} · ${skills.length} skills`);
+      }
+
       const step = describeMessage(message, repoRoot);
       if (step !== null) progress.step(step.tool, step.argument);
       sessionId ??= message.session_id;
@@ -116,11 +138,12 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   const summary = `done — ${turns} turns, ${progress.toolCalls} tool calls${formatTokenCost(costUsd)}`;
   const durationMs = progress.close(summary);
   await run.log(`generate attempt ${attempt} ${summary}`);
-  return { sessionId, turns, costUsd, durationMs };
+  return { sessionId, skills, turns, costUsd, durationMs };
 }
 
-/** Every immediate subdirectory of the skills directory is offered as a plugin. */
+/** Every immediate subdirectory of an explicitly configured skills directory. */
 async function discoverPlugins(): Promise<string[]> {
+  if (SKILLS_DIR === undefined) return [];
   const entries = await readdir(SKILLS_DIR, { withFileTypes: true }).catch(() => null);
   if (entries === null) return [];
   return entries
