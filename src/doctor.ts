@@ -4,11 +4,12 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { type Command, describe, runCommand } from "./commands.js";
 import { CONFIG_FILE, type HarnessConfig, readConfig, writeConfig } from "./config.js";
+import { emit } from "./events.js";
 import { commit, dirtyPaths } from "./git.js";
 import { type Proposal, resolveCommands } from "./resolve.js";
 import type { Run } from "./run.js";
 import { ServeError, startServer } from "./serve.js";
-import { dim, heading, row, tick, warn } from "./style.js";
+import { dim, heading } from "./style.js";
 import { describeFailure, runStages } from "./test.js";
 
 /** See PLAN-V2 § Bounds. Starting points, to be tuned once there are real runs. */
@@ -39,8 +40,8 @@ export interface DoctorOptions {
 export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
   const { repoRoot, run } = options;
 
-  console.log(heading("doctor"));
-  await checkTooling(repoRoot, run);
+  emit({ type: "phase:started", phase: "doctor" });
+  await checkTooling(repoRoot);
 
   const dirty = await dirtyPaths(
     repoRoot,
@@ -53,14 +54,14 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
         `Commit or stash them first — the run needs a known starting point to branch from.`,
     );
   }
-  await run.log("check tree clean", tick("tree clean"));
+  emit({ type: "check", name: "tree clean", ok: true });
 
-  await checkSkills(repoRoot, run);
+  await checkSkills(repoRoot);
 
   const existing = await readConfig(repoRoot);
   const proposal = existing === null ? await resolve(options) : null;
   const config = existing ?? proposal!.config;
-  if (existing !== null) await run.log(`check commands from ${CONFIG_FILE}`, tick(`commands from ${CONFIG_FILE}`));
+  if (existing !== null) emit({ type: "check", name: `commands from ${CONFIG_FILE}`, ok: true });
 
   // Every run, not just the first. On a first run this proves the resolution
   // works before it is written down; on every run it proves the repo was
@@ -71,7 +72,7 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
   if (proposal !== null) {
     await writeConfig(repoRoot, config, proposal.notes);
     await commit([CONFIG_FILE], `chore: record harness commands in ${CONFIG_FILE}`, repoRoot);
-    await run.log(`check wrote and committed ${CONFIG_FILE}`, tick(`wrote and committed ${CONFIG_FILE}`));
+    emit({ type: "check", name: `wrote and committed ${CONFIG_FILE}`, ok: true });
   }
 
   return config;
@@ -83,7 +84,7 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
  * less Hedera knowledge behind it — worth saying out loud rather than leaving
  * the operator to wonder why the output is thin.
  */
-async function checkSkills(repoRoot: string, run: Run): Promise<void> {
+async function checkSkills(repoRoot: string): Promise<void> {
   // Counted by the SKILL.md inside, not by directory type: a scaffolded
   // project symlinks .claude/skills/* at .agents/skills/*, and readdir reports
   // a symlink as a symlink, so an isDirectory() check reports none of them.
@@ -92,24 +93,22 @@ async function checkSkills(repoRoot: string, run: Run): Promise<void> {
   const found = entries.filter((entry) => existsSync(join(skillsDir, entry, "SKILL.md"))).length;
 
   if (found > 0) {
-    const what = `${found} project skills in .claude/skills`;
-    await run.log(`check ${what}`, tick(what));
+    emit({ type: "check", name: `${found} project skills in .claude/skills`, ok: true });
     return;
   }
   if (process.env["HEDERA_SKILLS_DIR"] !== undefined) {
-    await run.log("check skills from HEDERA_SKILLS_DIR", tick("skills from HEDERA_SKILLS_DIR"));
+    emit({ type: "check", name: "skills from HEDERA_SKILLS_DIR", ok: true });
     return;
   }
-  const remedy = "claude plugin marketplace add hedera-dev/hedera-skills";
-  await run.log(
-    "check no project skills — this project ships none in .claude/skills, so the " +
-      `agent works without Hedera-specific knowledge. Add them with: ${remedy}`,
-    `${warn("no project skills — the agent works without Hedera-specific knowledge")}\n` +
-      `  ${dim(`add them with: ${remedy}`)}`,
-  );
+  emit({
+    type: "check",
+    name: "no project skills — the agent works without Hedera-specific knowledge",
+    ok: false,
+    remedy: "add them with: claude plugin marketplace add hedera-dev/hedera-skills",
+  });
 }
 
-async function checkTooling(repoRoot: string, run: Run): Promise<void> {
+async function checkTooling(repoRoot: string): Promise<void> {
   const missing: string[] = [];
   for (const binary of ["node", "git"]) {
     if (!(await exists(binary, repoRoot))) missing.push(binary);
@@ -117,7 +116,7 @@ async function checkTooling(repoRoot: string, run: Run): Promise<void> {
   if (missing.length > 0) {
     throw new DoctorError(`not on PATH: ${missing.join(", ")}`);
   }
-  await run.log("check tooling", tick("tooling"));
+  emit({ type: "check", name: "tooling", ok: true });
 }
 
 async function exists(binary: string, cwd: string): Promise<boolean> {
@@ -126,8 +125,8 @@ async function exists(binary: string, cwd: string): Promise<boolean> {
 }
 
 async function resolve(options: DoctorOptions): Promise<Proposal> {
-  const { repoRoot, run } = options;
-  await run.log("resolving commands");
+  const { repoRoot } = options;
+  emit({ type: "note", level: "info", text: "resolving commands" });
 
   const proposal = await resolveCommands(repoRoot, RESOLVE_TIMEOUT_MS, options.model);
   const { config, notes } = proposal;
@@ -201,10 +200,7 @@ async function verifyByRunning(
   // `serve` is the one command the stages above cannot check: it never exits.
   // Starting it here turns a wrong dev-server command into a four-second
   // failure instead of one discovered after a generation has been paid for.
-  await run.log(
-    `baseline serve: ${describe(config.serve)}`,
-    row("serve", describe(config.serve)),
-  );
+  emit({ type: "command:started", name: "serve", command: config.serve });
   let server;
   try {
     server = await startServer(config.serve, repoRoot);
@@ -220,7 +216,7 @@ async function verifyByRunning(
   }
 
   await run.write(join("baseline", "serve.txt"), server.output());
-  await run.log(`baseline serve answered at ${server.url}`, tick(`serve answered at ${server.url}`));
+  emit({ type: "check", name: `serve answered at ${server.url}`, ok: true });
   await server.stop();
 }
 

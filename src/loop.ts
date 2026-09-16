@@ -4,10 +4,9 @@ import type { HarnessConfig } from "./config.js";
 import { type Outcome, evaluate } from "./evaluate.js";
 import { generate } from "./generate.js";
 import { commitWork } from "./git.js";
-import { formatDuration } from "./progress.js";
+import { type Timings, emit } from "./events.js";
 import type { Run } from "./run.js";
 import { startServer } from "./serve.js";
-import { dim, green, heading, red, yellow } from "./style.js";
 import { type StageFailure, describeFailure, runStages } from "./test.js";
 
 /** How much of a failing command's output the repair prompt carries. */
@@ -34,11 +33,7 @@ export interface LoopResult {
   timings: Timings;
 }
 
-export interface Timings {
-  generateMs: number;
-  testMs: number;
-  evaluateMs: number;
-}
+export type { Timings };
 
 /** What an attempt failed on, in the shape the diagram uses for `feedback.json`. */
 interface Feedback {
@@ -84,12 +79,12 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     await writeFeedback(run, attempt, feedback);
 
     if (feedback.ok) {
-      await report(run, attempt, feedback, previous);
+      report(attempt, feedback, previous);
       await writeResult(run, { passed: true, attempts: attempt, branch: options.branch, timings, skills });
       return { passed: true, attempts: attempt, branch: options.branch, timings };
     }
 
-    const repeated = await report(run, attempt, feedback, previous);
+    const repeated = report(attempt, feedback, previous);
     if (attempt === maxAttempts) break;
 
     // A failure that survived an attempt means the resumed conversation is
@@ -97,8 +92,11 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     // reasoning the agent has already committed to.
     if (repeated) {
       session = undefined;
-      const note = `attempt ${attempt + 1} starts a fresh session — same failure twice`;
-      await run.log(note, yellow(note));
+      emit({
+        type: "note",
+        level: "warn",
+        text: `attempt ${attempt + 1} starts a fresh session — same failure twice`,
+      });
     }
 
     previous = new Set(feedback.hashes);
@@ -117,7 +115,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
 async function assess(options: LoopOptions, attempt: number, timings: Timings): Promise<Feedback> {
   const { config, repoRoot, run } = options;
 
-  console.log(heading("test", `attempt ${attempt}`));
+  emit({ type: "phase:started", phase: "test", attempt });
   const testStarted = Date.now();
   const failure = await runStages({ config, repoRoot, run, prefix: `attempt-${attempt}` });
   timings.testMs += Date.now() - testStarted;
@@ -132,11 +130,7 @@ async function assess(options: LoopOptions, attempt: number, timings: Timings): 
     repoRoot,
     options.specInRepo === undefined ? [] : [options.specInRepo],
   );
-  const committed =
-    commit === null
-      ? `attempt ${attempt} changed nothing`
-      : `attempt ${attempt} committed ${commit.slice(0, 12)}`;
-  await run.log(committed, dim(`  ${committed}`));
+  emit({ type: "committed", attempt, sha: commit });
 
   if (failure !== null) return fromStage(failure);
 
@@ -164,8 +158,11 @@ async function withOneRetry(
   const first = await evaluate({ repoRoot, run, specPath, attempt, appUrl, model: options.model });
   if (first.type === "verdict") return first;
 
-  const retry = `no verdict (${first.reason}) — evaluating once more against the same commit`;
-  await run.log(retry, yellow(retry));
+  emit({
+    type: "note",
+    level: "warn",
+    text: `no verdict (${first.reason}) — evaluating once more against the same commit`,
+  });
   const second = await evaluate({ repoRoot, run, specPath, attempt, appUrl, model: options.model });
   if (second.type === "verdict") return second;
 
@@ -204,14 +201,9 @@ function fromVerdict(outcome: Outcome): Feedback {
  * Two attempts failing the same way is the signal that matters — it separates
  * an agent converging from one trading one failure for another.
  */
-async function report(
-  run: Run,
-  attempt: number,
-  feedback: Feedback,
-  previous: Set<string>,
-): Promise<boolean> {
+function report(attempt: number, feedback: Feedback, previous: Set<string>): boolean {
   if (feedback.ok) {
-    await run.log(`attempt ${attempt} PASSED`, `\nattempt ${attempt} ${green("PASSED")}`);
+    emit({ type: "attempt:finished", attempt, passed: true, open: 0, fixed: 0, fresh: 0, results: [] });
     return false;
   }
 
@@ -219,13 +211,15 @@ async function report(
   const fresh = feedback.hashes.filter((hash) => !previous.has(hash));
   const fixed = [...previous].filter((hash) => !feedback.hashes.includes(hash));
 
-  const tally = `${open.length} open, ${fixed.length} fixed, ${fresh.length} new`;
-  await run.log(
-    `attempt ${attempt} FAILED — ${tally}`,
-    `\nattempt ${attempt} ${red("FAILED")} ${dim(`— ${tally}`)}`,
-  );
-  // Findings stay at full strength: they are the reason to be reading this.
-  for (const line of feedback.results) await run.log(`  ${line}`, `  ${line}`);
+  emit({
+    type: "attempt:finished",
+    attempt,
+    passed: false,
+    open: open.length,
+    fixed: fixed.length,
+    fresh: fresh.length,
+    results: feedback.results,
+  });
   return open.length > 0;
 }
 
@@ -268,13 +262,4 @@ async function writeResult(
   result: { passed: boolean; attempts: number; branch: string; timings: Timings; skills: string[] },
 ): Promise<void> {
   await run.writeResult(result);
-}
-
-/** `generate 7:46 · test 0:52 · evaluate 3:28` */
-export function describeTimings(timings: Timings): string {
-  return [
-    `generate ${formatDuration(timings.generateMs)}`,
-    `test ${formatDuration(timings.testMs)}`,
-    `evaluate ${formatDuration(timings.evaluateMs)}`,
-  ].join(" · ");
 }

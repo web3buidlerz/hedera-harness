@@ -2,8 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Command, type CommandResult, describe, runCommand } from "./commands.js";
-import { formatClock } from "./progress.js";
-import { dim, row } from "./style.js";
+import { emit } from "./events.js";
 import type { HarnessConfig } from "./config.js";
 import type { Run } from "./run.js";
 
@@ -43,7 +42,7 @@ export interface StageOptions {
  * commands the agent is later judged against.
  */
 export async function runStages(options: StageOptions): Promise<StageFailure | null> {
-  const { config, repoRoot, run, prefix } = options;
+  const { config, repoRoot, run } = options;
 
   const install = await installIfNeeded(options);
   if (install !== null) return install;
@@ -55,7 +54,7 @@ export async function runStages(options: StageOptions): Promise<StageFailure | n
 
   for (const [stage, command] of remaining) {
     if (command === null) {
-      await run.log(`${prefix} ${stage} skipped (none)`, row(stage, "skipped (none)"));
+      emit({ type: "command:skipped", name: stage, reason: "none" });
       continue;
     }
     const failure = await runStage(stage, command, options);
@@ -69,15 +68,12 @@ export async function runStages(options: StageOptions): Promise<StageFailure | n
  * only when the manifests or the lockfile actually changed since last time.
  */
 async function installIfNeeded(options: StageOptions): Promise<StageFailure | null> {
-  const { config, repoRoot, run, prefix } = options;
+  const { config, repoRoot, run } = options;
   const current = await fingerprint(repoRoot);
   const recorded = await readFile(join(run.dir, FINGERPRINT_FILE), "utf8").catch(() => null);
 
   if (!options.forceInstall && recorded === current) {
-    await run.log(
-      `${prefix} install skipped (dependencies unchanged)`,
-      row("install", "skipped (dependencies unchanged)"),
-    );
+    emit({ type: "command:skipped", name: "install", reason: "dependencies unchanged" });
     return null;
   }
 
@@ -93,11 +89,9 @@ async function runStage(
   command: Command,
   { repoRoot, run, prefix }: StageOptions,
 ): Promise<StageFailure | null> {
-  await run.log(`${prefix} ${stage}: ${describe(command)}`, row(stage, describe(command)));
-  const result = await runCommand(command, repoRoot, COMMAND_TIMEOUT_MS, (elapsedMs, lastLine) => {
-    // The row above already named the stage; repeating it on every heartbeat
-    // just pushes the output that actually changes further right.
-    console.log(`  ${dim(formatClock(elapsedMs))}  ${dim(lastLine || "running…")}`);
+  emit({ type: "command:started", name: stage, command });
+  const result = await runCommand(command, repoRoot, COMMAND_TIMEOUT_MS, (elapsedMs, line) => {
+    emit({ type: "command:tick", elapsedMs, line });
   });
 
   const artifact = join(prefix, `${stage}.txt`);

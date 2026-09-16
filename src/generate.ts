@@ -2,8 +2,8 @@ import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { Progress, describeMessage, formatTokenCost } from "./progress.js";
-import { dim } from "./style.js";
+import { emit } from "./events.js";
+import { describeMessage } from "./messages.js";
 import type { Run } from "./run.js";
 
 /** See PLAN-V2 § Bounds. Starting points, to be tuned once there are real runs. */
@@ -61,11 +61,7 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   const transcript = await run.path(`attempt-${attempt}`, "generate.jsonl");
   const plugins = await discoverPlugins();
 
-  const progress = new Progress("generate");
-  // Log only: the terminal gets the stage heading from `progress.open` below,
-  // once the init message says what the agent could actually reach.
-  await run.log(`generate attempt ${attempt}`, null);
-
+  const startedAt = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WALL_CLOCK_MS);
 
@@ -73,6 +69,7 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   let skills: string[] = [];
   let turns = 0;
   let costUsd: number | undefined;
+  let toolCalls = 0;
   let announced = false;
 
   try {
@@ -115,12 +112,22 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
       if (!announced && message.type === "system" && message.subtype === "init") {
         skills = ((message as { skills?: unknown }).skills ?? []) as string[];
         announced = true;
+        // Announced here rather than before the query, because the init message
+        // is the first moment anything can say how many skills were loaded.
         const resumed = options.resume === undefined ? "" : " · resumed";
-        progress.open(`attempt ${attempt} · ${options.model}${resumed} · ${skills.length} skills`);
+        emit({
+          type: "phase:started",
+          phase: "generate",
+          attempt,
+          detail: `${options.model}${resumed} · ${skills.length} skills`,
+        });
       }
 
-      const step = describeMessage(message, repoRoot);
-      if (step !== null) progress.step(step.tool, step.argument);
+      const step = describeMessage(message);
+      if (step !== null) {
+        toolCalls += 1;
+        emit({ type: "tool", tool: step.tool, argument: step.argument });
+      }
       sessionId ??= message.session_id;
       if (message.type === "assistant") turns += 1;
       if (message.type === "result") {
@@ -138,9 +145,8 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
     clearTimeout(timer);
   }
 
-  const summary = `done — ${turns} turns, ${progress.toolCalls} tool calls${formatTokenCost(costUsd)}`;
-  const durationMs = progress.close(dim(summary));
-  await run.log(`generate attempt ${attempt} ${summary}`, null);
+  const durationMs = Date.now() - startedAt;
+  emit({ type: "generate:finished", attempt, turns, toolCalls, costUsd, durationMs });
   return { sessionId, skills, turns, costUsd, durationMs };
 }
 

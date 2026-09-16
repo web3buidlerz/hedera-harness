@@ -6,14 +6,18 @@ import { parseArgs } from "node:util";
 import { CONFIG_FILE, readConfig } from "./config.js";
 import { doctor } from "./doctor.js";
 import { initialise } from "./init.js";
-import { describeTimings, runLoop } from "./loop.js";
+import { runLoop } from "./loop.js";
 import { killTrackedChildren } from "./commands.js";
 import { commitWork, createBranch, currentBranch, headCommit, repoRoot, switchBranch } from "./git.js";
 import { Run, ensureExcluded, timestamp } from "./run.js";
-import { bold, dim, frame, green, red, yellow } from "./style.js";
+import { type Timings, emit } from "./events.js";
+import { renderToJson } from "./render/json.js";
+import { renderToLog } from "./render/log.js";
+import { renderToTerminal } from "./render/terminal.js";
+import { red } from "./style.js";
 
 const USAGE = `usage: harness init [name] [--model NAME] [--yes]
-       harness run --spec <path> [--max-attempts N] [--model NAME] [--yes]
+       harness run --spec <path> [--max-attempts N] [--model NAME] [--yes] [--json]
 
 Run from inside the target repository.
 
@@ -24,7 +28,8 @@ Run from inside the target repository.
   --spec <path>        the feature to build
   --max-attempts N    repair attempts before giving up (default 3)
   --model NAME        agent model: sonnet (default), opus, haiku, or a full id
-  --yes               skip the first-run command confirmation`;
+  --yes               skip the first-run command confirmation
+  --json              one JSON object per line instead of the watchable output`;
 
 class UsageError extends Error {}
 
@@ -42,6 +47,9 @@ interface Interruptible {
 
 const context: Interruptible = {};
 let interrupting = false;
+
+/** A cancelled run has no per-stage total worth reporting; the renderer omits it. */
+const NO_TIMINGS: Timings = { generateMs: 0, testMs: 0, evaluateMs: 0 };
 
 /**
  * Ctrl-C used to tear the process down without unwinding the `finally` blocks
@@ -69,13 +77,15 @@ async function cancel(): Promise<never> {
     await run.writeResult({ passed: false, cancelled: true, branch: branch ?? null }).catch(
       () => undefined,
     );
-    console.error(
-      `\n${frame([
-        yellow("CANCELLED"),
-        ...(branch === undefined ? [] : [`${dim("branch")} ${branch}`]),
-        `${dim("run   ")} ${run.dir}`,
-      ])}\n`,
-    );
+    emit({
+      type: "run:finished",
+      passed: false,
+      cancelled: true,
+      attempts: 0,
+      branch: branch ?? null,
+      timings: NO_TIMINGS,
+      dir: run.dir,
+    });
   }
   process.exit(130);
 }
@@ -83,7 +93,7 @@ async function cancel(): Promise<never> {
 function onInterrupt(): void {
   if (interrupting) process.exit(130);
   interrupting = true;
-  console.error(yellow("\ninterrupted — cleaning up (Ctrl-C again to quit now)"));
+  emit({ type: "note", level: "warn", text: "interrupted — cleaning up (Ctrl-C again to quit now)" });
   void cancel();
 }
 
@@ -97,6 +107,7 @@ interface Options {
   maxAttempts: number;
   model: string;
   assumeYes: boolean;
+  json: boolean;
 }
 
 /** Pinned rather than inherited, so a run does not change meaning when the CLI's default moves. */
@@ -120,6 +131,7 @@ function parse(argv: string[]): Options {
         "max-attempts": { type: "string", default: "3" },
         model: { type: "string", default: DEFAULT_MODEL },
         yes: { type: "boolean", default: false },
+        json: { type: "boolean", default: false },
       },
       strict: true,
     }));
@@ -143,6 +155,7 @@ function parse(argv: string[]): Options {
     maxAttempts,
     model: values.model,
     assumeYes: values.yes,
+    json: values.json,
   };
 }
 
@@ -164,28 +177,33 @@ async function main(argv: string[]): Promise<number> {
   const branch = `harness/${stamp}`;
   context.run = run;
 
-  // The header is read once, at a glance, to confirm the run is pointed where
-  // you think it is. Labels dim, values at full strength — the values are the
-  // part you are checking.
-  await run.log(`run ${stamp}`, `\n${bold(`harness ${options.command}`)}  ${dim(stamp)}`);
-  await run.log(`repo ${root}`, `${dim("repo  ")} ${root}`);
-  if (options.command === "run") {
-    const shown = insideRepo(root, options.spec) ?? options.spec;
-    await run.log(`spec ${options.spec}`, `${dim("spec  ")} ${shown}`);
-  }
+  // Renderers attach before the first event, and the log one needs the run
+  // directory — which is why `Run.create` comes first.
+  renderToLog(run.dir);
+  if (options.json) renderToJson();
+  else renderToTerminal();
+
   const startedOn = await currentBranch(root);
   context.startedOn = startedOn;
-  const head = (await headCommit(root)).slice(0, 12);
-  await run.log(`from ${startedOn} at ${head}`, `${dim("from  ")} ${startedOn} ${dim(`at ${head}`)}`);
-  await run.log(
-    `max-attempts ${options.maxAttempts}, model ${options.model}`,
-    `${dim("model ")} ${options.model} ${dim(`· up to ${options.maxAttempts} attempt(s)`)}`,
-  );
+  const specInRepoPath = options.command === "run" ? insideRepo(root, options.spec) : undefined;
+  emit({
+    type: "run:started",
+    command: options.command,
+    stamp,
+    repo: root,
+    spec: options.command === "run" ? options.spec : undefined,
+    specInRepo: specInRepoPath,
+    from: startedOn,
+    head: (await headCommit(root)).slice(0, 12),
+    model: options.model,
+    maxAttempts: options.maxAttempts,
+  });
 
   // DOCTOR runs before the branch exists: harness.yaml describes the project,
   // so it is committed where the project lives, not on a throwaway run branch.
-  const specInRepo = options.command === "run" ? insideRepo(root, options.spec) : undefined;
+  const specInRepo = specInRepoPath;
   context.specInRepo = specInRepo;
+
   await doctor({
     repoRoot: root,
     run,
@@ -195,12 +213,7 @@ async function main(argv: string[]): Promise<number> {
   });
 
   if (options.command === "init") {
-    const written = await initialise({ repoRoot: root, run, model: options.model, name: options.name });
-    console.log(
-      `\n${bold(written.path)}` +
-        `${written.tailored ? "" : dim("  (generic skeleton — the agent was unreachable)")}\n` +
-        `${dim("fill it in, then:")}  harness run --spec ${written.path}`,
-    );
+    await initialise({ repoRoot: root, run, model: options.model, name: options.name });
     return 0;
   }
 
@@ -210,7 +223,7 @@ async function main(argv: string[]): Promise<number> {
 
   await createBranch(branch, root);
   context.branch = branch;
-  await run.log(`branch ${branch}`, dim(`\nworking on ${branch}`));
+  emit({ type: "branch", branch });
 
   let result;
   try {
@@ -229,22 +242,20 @@ async function main(argv: string[]): Promise<number> {
     // Back to the branch the run started from, so the next run branches from
     // the same base instead of stacking on this one — and so a run leaves your
     // working state where it found it. The work is on `branch`, named below.
-    await switchBranch(startedOn, root).catch(async (error: Error) => {
-      await run.log(`could not return to ${startedOn}: ${error.message}`);
+    await switchBranch(startedOn, root).catch((error: Error) => {
+      emit({ type: "note", level: "warn", text: `could not return to ${startedOn}: ${error.message}` });
     });
   }
 
-  // The one block worth screenshotting: the verdict, where the time went, and
-  // the two paths you need next — the branch holding the work and the run that
-  // explains it.
-  console.log(
-    `\n${frame([
-      `${result.passed ? green("PASSED") : red("FAILED")} ${dim(`after ${result.attempts} attempt(s)`)}`,
-      dim(describeTimings(result.timings)),
-      `${dim("branch")} ${result.branch}`,
-      `${dim("run   ")} ${relative(root, run.dir)}`,
-    ])}\n`,
-  );
+  emit({
+    type: "run:finished",
+    passed: result.passed,
+    cancelled: false,
+    attempts: result.attempts,
+    branch: result.branch,
+    timings: result.timings,
+    dir: run.dir,
+  });
   return result.passed ? 0 : 1;
 }
 
