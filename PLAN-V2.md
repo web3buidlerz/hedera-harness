@@ -39,8 +39,8 @@ Checks, in order; any failure stops the run before anything is touched:
 2. `.harness/` is listed in `.git/info/exclude`, appended if missing. That file is per-clone and untracked, so the harness's own output never dirties the repo and never appears as a diff in the branch you review. If `.harness/` is already *tracked* in this repo, the run stops and says so — ignore rules don't apply to tracked files, and the next check would fail forever.
 3. Git tree clean.
 4. Claude Code credentials resolve.
-5. `@playwright/cli` installed and its browser downloaded; the Hedera and Playwright plugin directories exist on disk.
-6. Plugins actually load. `plugins_applied` from `initializationResult()` is asserted on the first query that lists them — DOCTOR's own resolution call on a first run, GENERATE's otherwise — and a plugin listed but not applied aborts before any work starts. It cannot be checked statically: the flag only exists once a query is running. Silently skill-less generation is the failure this prevents.
+5. `@playwright/cli` installed and its browser downloaded.
+6. Skills reported. A project shipping none in `.claude/skills/` still runs, with less Hedera knowledge behind it, so DOCTOR says so rather than leaving the operator to wonder why the output is thin. Counted by the `SKILL.md` inside each entry, not by directory type — a scaffolded project symlinks `.claude/skills/*` at `.agents/skills/*`, and `readdir` reports a symlink as a symlink.
 7. Commands resolved: `install`, `build`, `test`, `serve` — see below. Later runs read the tracked `harness.yaml` and skip this entirely.
 8. The resolution works: `install`, then `build`, then `test` on the untouched repo; then `serve` starts, prints a URL that answers, and is stopped. Only now is `harness.yaml` written and committed.
 
@@ -63,7 +63,7 @@ Each command may be a string or `{ run, cwd }`. `cwd` defaults to the repo root.
 
 ### GENERATE
 
-One `query()` with the spec as the prompt, `cwd` = repo, Hedera skills loaded as local plugins from `~/Work/hedera-skills/plugins/*`. A `PreToolUse` hook denies writes to dotenv files — `.env.example` and friends excepted, since templates hold no secrets. Everything else — which files to touch, which skills to use, whether to write tests — is the agent's call.
+One `query()` with the spec as the prompt, `cwd` = repo. Skills come from the project: `settingSources: ["project"]` loads whatever it carries in `.claude/skills/`, which a scaffolded repo already ships — versioned with the code, identical for every teammate, nothing to install. `HEDERA_SKILLS_DIR` remains as an explicit override for a project that ships none. Pointing it at a marketplace checkout by default was a mistake: fifteen of its twenty-one skills duplicated ones the project already had, under a second plugin-qualified name, and the six it genuinely added were about authoring plugins and harness recipes rather than building the feature. A `PreToolUse` hook denies writes to dotenv files — `.env.example` and friends excepted, since templates hold no secrets. Everything else — which files to touch, which skills to use, whether to write tests — is the agent's call.
 
 **The hook is a first line of defence, not the guarantee.** Tested against a spec that asked for a `.env`, it refused `Write`, then `printf > .env`, then `cp /tmp/x ./.env` — and the agent then wrote the file with `python3 -c "open('.env','w')"`. Pattern-matching a command string cannot contain an interpreter, and no amount of regex will change that.
 
@@ -187,6 +187,57 @@ Each step ends runnable, and each carries the bound for what it introduces (see 
 5. `evaluate` — verdict arrives via the tool from a directory that cannot read the repo.
 6. `loop` — repair on failure, session resume, failure hashing and the fresh-session reset, budget.
 
+## Watching a run
+
+The loop is built. What a person sees while it runs is not, and a run can go
+forty minutes unattended.
+
+**Interaction belongs at the edges, never in the middle.** The value of this
+tool is that you are not there — if you are watching closely enough to steer
+the agent, you would be faster using Claude Code directly. Every candidate for
+mid-run interaction fails on that, and one fails worse: asking a human to
+confirm a verdict destroys the adjudication guarantee outright, because an
+override available once is an override taken always. The one prompt that
+exists — DOCTOR's command confirmation — works precisely because it is at the
+start, once per project, and a judgement only a person can make.
+
+So a run should be **worth watching**, and a finished run should be **worth
+sitting in**. Those are different jobs.
+
+This also settles a recurring temptation. `hedera-harness-go` has a genuinely
+nice Charm TUI, and the Node equivalent is Ink, which Claude Code itself uses.
+But `hh` is an interactive tool you sit inside; this is closer to a CI job you
+start and come back to, and everywhere it is heading — several specs, running
+on a pull request, overnight — is *more* unattended. A full-screen TUI also
+destroys scrollback, and on a forty-minute run the scrollback is the record.
+Ink stays off the table until there is something genuinely interactive to
+build, and if that ever arrives it is the report, not the run.
+
+Four pieces, each its own change, each useful alone:
+
+1. **Graceful interrupt.** There is no signal handling at all, so Ctrl-C tears
+   the process down without unwinding the `finally` blocks: an orphaned dev
+   server holding the port, and you left on a harness branch with a dirty tree
+   — the same lockout that committing every attempt was meant to end. Kill the
+   process group, commit the attempt as cancelled so the tree is clean, write
+   `result.json`, return to the starting branch. A second interrupt force-quits.
+   This is a correctness fix, not presentation.
+2. **Presentation.** Colour that carries meaning rather than decoration,
+   DOCTOR's checks as a checklist rather than log lines, stage headers to
+   anchor a long scrollback, a summary worth screenshotting. Plain ANSI, no
+   dependency, no alternate screen, no repainting; identical bytes when piped,
+   minus colour. `NO_COLOR` respected.
+3. **An event seam.** Stages emit typed events; renderers hang off the stream.
+   Deliberately *after* presentation: designing an event schema in the abstract
+   is guessing at what the events carry, whereas building the renderer first
+   says exactly which fields matter, and the formatting functions are pure and
+   survive the move. It pays for three things, not one — a second renderer, a
+   `--json` mode for CI, and a loop that can finally be tested by asserting on
+   events instead of standing up agents.
+4. **`harness report`.** Read a finished run without parsing JSONL: outcome,
+   attempts, findings, evidence. This is where someone actually sits with time
+   to spend, and the only place a richer terminal UI would earn a dependency.
+
 ## Later
 
 Known improvements, parked deliberately. Each is small; none blocks a working loop.
@@ -198,8 +249,6 @@ Known improvements, parked deliberately. Each is small; none blocks a working lo
 **Say which account a run uses, rather than inheriting one.** There is no `ANTHROPIC_API_KEY`, no `ANTHROPIC_AUTH_TOKEN` and no `ant` profile on disk, so the harness authenticates as whoever Claude Code is currently logged in as — a subscription credential in the keychain. That is right on a laptop and wrong anywhere unattended: a CI run wants an explicit key, which would also move it to per-token billing deliberately instead of by accident. The same argument as pinning the model — inheriting is the wrong mechanism even when the inherited value happens to be right. It also changes what the failure looks like: on a subscription, exhausting a usage limit mid-run surfaces as a stage failing rather than as anything that says "rate limited", so the run reads as a product failure when it is an account one.
 
 **Rename the spend bound to say what it measures.** `maxBudgetUsd` bounds the SDK's `total_cost_usd`, which under subscription auth is a list-price *equivalent* of the tokens used — a size, not money leaving an account. It still works as a stop; the name will mislead the next person to read it. Related, and worth measuring before the benchmark: how many tokens one small feature actually consumes, since that is what decides whether an x402-scale run fits inside a subscription's limits at all.
-
-**Show progress during GENERATE and EVALUATE.** The harness prints one line and then goes quiet for the longest and most expensive stage, so a working run and a hung one look identical from the terminal — the first real run prompted "it feels kinda stuck" while the agent was mid-implementation and writing to disk every second. Every message needed is already in hand and being dropped straight into the transcript; a line per tool call, or a periodic count of calls, elapsed time and tokens, is enough. This matters more than ergonomics because GENERATE is bounded at sixty minutes: without output, a genuine hang is invisible for an hour.
 
 ## Not in scope
 
