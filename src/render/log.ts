@@ -86,6 +86,12 @@ export function renderToLog(dir: string): () => void {
         for (const line of event.results) write(`  ${line}`);
         return;
 
+      case "proposal":
+        for (const { name, command } of event.commands) {
+          write(`proposed ${name}: ${command === null ? "(none)" : describe(command)}`);
+        }
+        return;
+
       case "branch":
         write(`branch ${event.branch}`);
         return;

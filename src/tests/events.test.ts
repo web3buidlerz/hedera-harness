@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import test, { afterEach } from "node:test";
 import { type HarnessEvent, type Timings, collect, emit, reset, subscribe } from "../events.js";
 import { describeMessage } from "../messages.js";
@@ -71,6 +72,13 @@ const STREAM: HarnessEvent[] = [
   },
   { type: "phase:started", phase: "doctor" },
   { type: "check", name: "tooling", ok: true },
+  {
+    type: "proposal",
+    commands: [
+      { name: "install", command: { run: "npm install" }, note: "No lockfile." },
+      { name: "test", command: null },
+    ],
+  },
   { type: "check", name: "no project skills", ok: false, remedy: "install them" },
   { type: "command:started", name: "build", command: { run: "yarn build" } },
   { type: "command:tick", elapsedMs: 10_000, line: "compiling" },
@@ -124,6 +132,8 @@ test("harness.log is plain text and ignores the high-frequency events", async ()
     "from main at abcdef123456",
     "max-attempts 3, model sonnet",
     "check tooling",
+    "proposed install: npm install",
+    "proposed test: (none)",
     "check no project skills. install them",
     "baseline build: yarn build",
     "generate attempt 1",
@@ -151,6 +161,40 @@ test("--json emits one parseable object per event, carrying the raw fields", asy
   const generated = parsed.find((event) => event["type"] === "generate:finished");
   assert.equal(generated?.["costUsd"], 0.48);
   assert.equal(generated?.["toolCalls"], 4);
+});
+
+/**
+ * The guard for the class of bug, rather than another instance of it.
+ *
+ * Two leaks shipped before this existed: the interrupt notice and DOCTOR's
+ * command proposal both wrote English straight to stdout, which put nine bare
+ * lines of prose into the middle of a `--json` stream. Both were invisible to
+ * every test that only checked what the renderers do with events they are
+ * given, because the problem was output that never became an event at all.
+ */
+test("nothing outside a renderer writes to stdout", async () => {
+  const src = fileURLToPath(new URL("../..", import.meta.url));
+  const files = await readdir(join(src, "src"), { recursive: true, withFileTypes: true });
+
+  const offenders: string[] = [];
+  for (const file of files) {
+    if (!file.name.endsWith(".ts")) continue;
+    const path = join(file.parentPath, file.name);
+    const relativePath = relative(join(src, "src"), path);
+    // Renderers are the only place formatting belongs. Tests capture stdout to
+    // assert on it. `cli.ts` keeps one console.error for a thrown error, which
+    // is the one message that exists precisely because the run did not.
+    if (relativePath.startsWith("render/") || relativePath.startsWith("tests/")) continue;
+
+    const source = await readFile(path, "utf8");
+    for (const [index, line] of source.split("\n").entries()) {
+      if (!/\bconsole\.|process\.stdout\.write/.test(line)) continue;
+      if (relativePath === "cli.ts" && line.includes("console.error")) continue;
+      offenders.push(`${relativePath}:${index + 1}  ${line.trim()}`);
+    }
+  }
+
+  assert.deepEqual(offenders, [], `output bypassing the event seam:\n${offenders.join("\n")}`);
 });
 
 test("describeMessage reports the raw subject, leaving the repo root to the renderer", () => {

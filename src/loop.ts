@@ -57,7 +57,7 @@ export class AbortRun extends Error {
  * is spent. The agent decides how to fix things; this decides whether it did.
  */
 export async function runLoop(options: LoopOptions): Promise<LoopResult> {
-  const { config, repoRoot, run, maxAttempts } = options;
+  const { repoRoot, run, maxAttempts } = options;
 
   const timings: Timings = { generateMs: 0, testMs: 0, evaluateMs: 0 };
   // Recorded once: what the agent could reach. A run that behaves differently

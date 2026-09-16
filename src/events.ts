@@ -77,6 +77,11 @@ export type HarnessEvent =
       results: string[];
     }
   | { type: "branch"; branch: string }
+  /** DOCTOR's proposed commands, before the operator confirms them. */
+  | {
+      type: "proposal";
+      commands: Array<{ name: string; command: Command | null; note?: string | undefined }>;
+    }
   /** Anything worth saying that is not one of the above. `warn` is for the unexpected-but-survivable. */
   | { type: "note"; level: "info" | "warn"; text: string }
   | {

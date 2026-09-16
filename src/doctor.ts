@@ -2,14 +2,13 @@ import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { type Command, describe, runCommand } from "./commands.js";
+import { type Command, runCommand } from "./commands.js";
 import { CONFIG_FILE, type HarnessConfig, readConfig, writeConfig } from "./config.js";
 import { emit } from "./events.js";
 import { commit, dirtyPaths } from "./git.js";
 import { type Proposal, resolveCommands } from "./resolve.js";
 import type { Run } from "./run.js";
 import { ServeError, startServer } from "./serve.js";
-import { dim, heading } from "./style.js";
 import { describeFailure, runStages } from "./test.js";
 
 /** See PLAN-V2 § Bounds. Starting points, to be tuned once there are real runs. */
@@ -137,12 +136,14 @@ async function resolve(options: DoctorOptions): Promise<Proposal> {
     if (problem !== null) throw new DoctorError(`proposed ${name} command ${problem}`);
   }
 
-  console.log(heading(CONFIG_FILE, "proposed for this project"));
-  for (const [name, command] of entries(config)) {
-    console.log(`\n  ${name.padEnd(8)}${command === null ? dim("(none)") : describe(command)}`);
-    console.log(`  ${" ".repeat(8)}${dim(notes[name as keyof typeof notes] ?? "")}`);
-  }
-  console.log("");
+  emit({
+    type: "proposal",
+    commands: entries(config).map(([name, command]) => ({
+      name,
+      command,
+      note: notes[name as keyof typeof notes],
+    })),
+  });
 
   await confirm(options);
   return proposal;
@@ -166,7 +167,9 @@ async function confirm(options: DoctorOptions): Promise<void> {
     );
   }
 
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // The prompt goes to stderr, not stdout: stdout carries the run, and under
+  // `--json` a line of English in it would break every consumer.
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     const answer = (await rl.question("Use these? [y/N] ")).trim().toLowerCase();
     if (answer !== "y" && answer !== "yes") {

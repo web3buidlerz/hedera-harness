@@ -10,7 +10,7 @@ import { runLoop } from "./loop.js";
 import { killTrackedChildren } from "./commands.js";
 import { commitWork, createBranch, currentBranch, headCommit, repoRoot, switchBranch } from "./git.js";
 import { Run, ensureExcluded, timestamp } from "./run.js";
-import { type Timings, emit } from "./events.js";
+import { type Timings, emit, subscribe } from "./events.js";
 import { renderToJson } from "./render/json.js";
 import { renderToLog } from "./render/log.js";
 import { renderToTerminal } from "./render/terminal.js";
@@ -43,9 +43,11 @@ interface Interruptible {
   branch?: string;
   startedOn?: string;
   specInRepo?: string | undefined;
+  /** Attempts that actually completed, so a cancelled run does not report zero. */
+  attempts: number;
 }
 
-const context: Interruptible = {};
+const context: Interruptible = { attempts: 0 };
 let interrupting = false;
 
 /** A cancelled run has no per-stage total worth reporting; the renderer omits it. */
@@ -74,14 +76,14 @@ async function cancel(): Promise<never> {
     if (startedOn !== undefined) await switchBranch(startedOn, repoRoot).catch(() => undefined);
   }
   if (run !== undefined) {
-    await run.writeResult({ passed: false, cancelled: true, branch: branch ?? null }).catch(
-      () => undefined,
-    );
+    await run
+      .writeResult({ passed: false, cancelled: true, attempts: context.attempts, branch: branch ?? null })
+      .catch(() => undefined);
     emit({
       type: "run:finished",
       passed: false,
       cancelled: true,
-      attempts: 0,
+      attempts: context.attempts,
       branch: branch ?? null,
       timings: NO_TIMINGS,
       dir: run.dir,
@@ -182,6 +184,11 @@ async function main(argv: string[]): Promise<number> {
   renderToLog(run.dir);
   if (options.json) renderToJson();
   else renderToTerminal();
+  // Read back off the stream rather than tracked alongside it, so an
+  // interrupted run reports the attempts that actually completed.
+  subscribe((event) => {
+    if (event.type === "attempt:finished") context.attempts = event.attempt;
+  });
 
   const startedOn = await currentBranch(root);
   context.startedOn = startedOn;

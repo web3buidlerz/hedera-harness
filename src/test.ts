@@ -42,7 +42,7 @@ export interface StageOptions {
  * commands the agent is later judged against.
  */
 export async function runStages(options: StageOptions): Promise<StageFailure | null> {
-  const { config, repoRoot, run } = options;
+  const { config } = options;
 
   const install = await installIfNeeded(options);
   if (install !== null) return install;

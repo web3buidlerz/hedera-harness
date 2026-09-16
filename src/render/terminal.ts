@@ -1,5 +1,6 @@
 import { relative } from "node:path";
 import { describe } from "../commands.js";
+import { CONFIG_FILE } from "../config.js";
 import { type HarnessEvent, type Timings, subscribe } from "../events.js";
 import { bold, dim, frame, green, heading, red, row, tick, warn, yellow } from "../style.js";
 
@@ -120,6 +121,18 @@ export function renderToTerminal(): () => void {
         for (const line of event.results) console.log(`  ${line}`);
         return;
       }
+
+      case "proposal":
+        // Not `heading(CONFIG_FILE)`: headings are uppercased, and shouting a real
+        // filename back at someone misrepresents what is on disk.
+        console.log(heading("proposed", `commands for this project — ${CONFIG_FILE}`));
+        for (const { name, command, note } of event.commands) {
+          console.log(`\n  ${name.padEnd(8)}${command === null ? dim("(none)") : describe(command)}`);
+          // The agent's reasoning, which is the whole point of confirming.
+          if (note !== undefined) console.log(`  ${" ".repeat(8)}${dim(note)}`);
+        }
+        console.log("");
+        return;
 
       case "branch":
         console.log(dim(`\nworking on ${event.branch}`));
