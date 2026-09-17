@@ -37,3 +37,46 @@ function subjectOf(input: unknown): string {
   }
   return "";
 }
+
+/** What an SDK `result` message says about the turn that just ended. */
+export interface Ending {
+  /** Turns the SDK counted, which is what `maxTurns` is enforced against. */
+  turns: number;
+  /** Cumulative for the session, so the last one wins rather than the sum. */
+  costUsd: number | undefined;
+  /** Set when the SDK stopped the agent itself, e.g. a turn limit. */
+  failure: string | null;
+}
+
+/**
+ * Reads a `result` message, or null for anything else.
+ *
+ * Both numbers were being got wrong. Turns were counted here as assistant
+ * messages, which reported 84 for a conversation the SDK measured at 41 and
+ * capped at 300 — so the figure on screen bore no fixed relation to the bound
+ * it was supposed to inform. And one conversation can end more than once: a
+ * background subagent finishing wakes it with a `task-notification` for a few
+ * more turns, arriving as a second result. Turns accumulate across those;
+ * `total_cost_usd` is already cumulative, so it must not.
+ */
+export function endingOf(message: unknown, maxTurns: number): Ending | null {
+  const candidate = message as {
+    type?: string;
+    num_turns?: number;
+    total_cost_usd?: number;
+    is_error?: boolean;
+    subtype?: string;
+  };
+  if (candidate.type !== "result") return null;
+  return {
+    turns: candidate.num_turns ?? 0,
+    costUsd: candidate.total_cost_usd,
+    failure: candidate.is_error === true ? describeStop(candidate.subtype, maxTurns) : null,
+  };
+}
+
+/** Why the SDK stopped the agent itself, in the harness's words rather than its own. */
+function describeStop(subtype: string | undefined, maxTurns: number): string {
+  if (subtype === "error_max_turns") return `it used all ${maxTurns} of its turns`;
+  return `it stopped early (${subtype ?? "error"})`;
+}

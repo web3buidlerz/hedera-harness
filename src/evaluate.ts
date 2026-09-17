@@ -6,12 +6,17 @@ import { fileURLToPath } from "node:url";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { emit } from "./events.js";
-import { describeMessage } from "./messages.js";
+import { describeMessage, endingOf } from "./messages.js";
 import type { Run } from "./run.js";
 
 /** See PLAN-V2 § Bounds — shorter than GENERATE: judging is cheaper than building. */
 const WALL_CLOCK_MS = 20 * 60_000;
-const MAX_TURNS = 120;
+// Loosened from 120 after measuring: at 4x the busiest real evaluation this was
+// the tightest bound in the harness, on specs that have all been small. Turns
+// are the last line of defence, not the first — they exist to stop a cheap
+// endless loop that spend and wall clock would take far too long to catch, so
+// the other two should bind first in any normal run.
+const MAX_TURNS = 300;
 const MAX_BUDGET_USD = 5;
 
 const TOOL = "submit_verdict";
@@ -207,14 +212,14 @@ async function pass(
       const step = describeMessage(message);
       if (step !== null) emit({ type: "tool", tool: step.tool, argument: step.argument });
       sessionId ??= message.session_id;
-      if (message.type === "result") {
-        costUsd = (message as { total_cost_usd?: number }).total_cost_usd;
-        // A bound the SDK enforces itself — a turn limit, a spend cap — arrives
-        // as an error result and *then* throws when the iterator is pulled
-        // again. Reading it here is what turns "the run died" into "no verdict,
-        // ask once more", which is what the bounds table always said it was.
-        const ended = message as { is_error?: boolean; subtype?: string };
-        if (ended.is_error === true) turn.captured.malformed = why(ended.subtype);
+      // A bound the SDK enforces itself arrives as an error result and *then*
+      // throws when the iterator is pulled again. Reading it here is what turns
+      // "the run died" into "no verdict, ask once more", which is what the
+      // bounds table always said it was.
+      const ending = endingOf(message, MAX_TURNS);
+      if (ending !== null) {
+        costUsd = ending.costUsd;
+        if (ending.failure !== null) turn.captured.malformed = `the evaluator stopped because ${ending.failure}`;
       }
     }
   } catch (error) {
@@ -240,12 +245,6 @@ async function pass(
     durationMs: Date.now() - startedAt,
   });
   return { outcome, sessionId };
-}
-
-/** Why the SDK ended a turn itself, in the harness's words rather than its own. */
-function why(subtype: string | undefined): string {
-  if (subtype === "error_max_turns") return `the evaluator used all ${MAX_TURNS} of its turns`;
-  return `the evaluator stopped early (${subtype ?? "error"})`;
 }
 
 function verdictServer(captured: Captured): ReturnType<typeof createSdkMcpServer> {
