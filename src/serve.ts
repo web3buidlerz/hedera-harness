@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { type Command, describe, killGroup } from "./commands.js";
+import { type Command, describe, killGroup, trackChild, untrackChild } from "./commands.js";
 
 /** See PLAN-V2 § Bounds. */
 const READY_TIMEOUT_MS = 2 * 60_000;
@@ -47,6 +47,7 @@ export async function startServer(
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+  trackChild(child.pid);
   let output = "";
   let exited: number | null = null;
   const collect = (chunk: Buffer) => {
@@ -59,9 +60,11 @@ export async function startServer(
   });
   child.on("close", (code) => {
     exited = code ?? 0;
+    untrackChild(child.pid);
   });
 
   const stop = async (): Promise<void> => {
+    untrackChild(child.pid);
     killGroup(child.pid);
     await new Promise<void>((resolve) => {
       if (exited !== null) return resolve();
