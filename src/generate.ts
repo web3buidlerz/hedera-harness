@@ -2,8 +2,8 @@ import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { Progress, describeMessage, formatTokenCost } from "./progress.js";
-import { dim } from "./style.js";
+import { emit } from "./events.js";
+import { describeMessage, endingOf } from "./messages.js";
 import type { Run } from "./run.js";
 
 /** See PLAN-V2 § Bounds. Starting points, to be tuned once there are real runs. */
@@ -61,11 +61,7 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   const transcript = await run.path(`attempt-${attempt}`, "generate.jsonl");
   const plugins = await discoverPlugins();
 
-  const progress = new Progress("generate");
-  // Log only: the terminal gets the stage heading from `progress.open` below,
-  // once the init message says what the agent could actually reach.
-  await run.log(`generate attempt ${attempt}`, null);
-
+  const startedAt = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WALL_CLOCK_MS);
 
@@ -73,7 +69,9 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   let skills: string[] = [];
   let turns = 0;
   let costUsd: number | undefined;
+  let toolCalls = 0;
   let announced = false;
+  let stopped: string | null = null;
 
   try {
     const conversation = query({
@@ -115,19 +113,36 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
       if (!announced && message.type === "system" && message.subtype === "init") {
         skills = ((message as { skills?: unknown }).skills ?? []) as string[];
         announced = true;
+        // Announced here rather than before the query, because the init message
+        // is the first moment anything can say how many skills were loaded.
         const resumed = options.resume === undefined ? "" : " · resumed";
-        progress.open(`attempt ${attempt} · ${options.model}${resumed} · ${skills.length} skills`);
+        emit({
+          type: "phase:started",
+          phase: "generate",
+          attempt,
+          detail: `${options.model}${resumed} · ${skills.length} skills`,
+        });
       }
 
-      const step = describeMessage(message, repoRoot);
-      if (step !== null) progress.step(step.tool, step.argument);
+      const step = describeMessage(message);
+      if (step !== null) {
+        toolCalls += 1;
+        emit({ type: "tool", tool: step.tool, argument: step.argument });
+      }
       sessionId ??= message.session_id;
-      if (message.type === "assistant") turns += 1;
-      if (message.type === "result") {
-        costUsd = (message as { total_cost_usd?: number }).total_cost_usd;
+      const ending = endingOf(message, MAX_TURNS);
+      if (ending !== null) {
+        turns += ending.turns;
+        costUsd = ending.costUsd;
+        if (ending.failure !== null) stopped = ending.failure;
       }
     }
   } catch (error) {
+    // A bound the SDK enforces itself arrives as an error result and only then
+    // throws, so by here we already know why. Without this the run died with
+    // the SDK's own words — "Claude Code returned an error result: Reached
+    // maximum number of turns (300)" — which names no stage and no remedy.
+    if (stopped !== null) throw new GenerateError(`the agent stopped because ${stopped}`);
     if (controller.signal.aborted && !(error instanceof GenerateError)) {
       throw new GenerateError(
         `the agent did not finish within ${WALL_CLOCK_MS / 60_000} minutes`,
@@ -138,9 +153,13 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
     clearTimeout(timer);
   }
 
-  const summary = `done — ${turns} turns, ${progress.toolCalls} tool calls${formatTokenCost(costUsd)}`;
-  const durationMs = progress.close(dim(summary));
-  await run.log(`generate attempt ${attempt} ${summary}`, null);
+  // Generation is bounded to protect the run, not to shape an attempt: a
+  // breach is the harness's problem and must never be charged to the agent as
+  // a failed attempt, so it aborts rather than becoming a repair.
+  if (stopped !== null) throw new GenerateError(`the agent stopped because ${stopped}`);
+
+  const durationMs = Date.now() - startedAt;
+  emit({ type: "generate:finished", attempt, turns, toolCalls, costUsd, durationMs });
   return { sessionId, skills, turns, costUsd, durationMs };
 }
 

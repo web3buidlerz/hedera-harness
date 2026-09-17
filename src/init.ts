@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { emit } from "./events.js";
 import type { Run } from "./run.js";
 
 /** Where specs live. A convention, not a requirement — `run` takes any path. */
@@ -53,13 +54,18 @@ export async function initialise(options: InitOptions): Promise<InitResult> {
     throw new InitError(`${relative} already exists. Pick another name, or edit that one.`);
   }
 
-  const drafted = await draft(options).catch(async (error: Error) => {
-    await options.run.log(`could not draft a tailored spec (${error.message}) — writing the skeleton`);
+  const drafted = await draft(options).catch((error: Error) => {
+    emit({
+      type: "note",
+      level: "warn",
+      text: `could not draft a tailored spec (${error.message}) — writing the skeleton`,
+    });
     return null;
   });
 
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, drafted ?? SKELETON);
+  emit({ type: "spec:written", path: relative, tailored: drafted !== null });
   return { path: relative, tailored: drafted !== null };
 }
 

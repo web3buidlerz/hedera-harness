@@ -7,6 +7,10 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
+    // A refactor that moves work between modules leaves dead bindings behind;
+    // this is what notices, rather than the next person reading the file.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "declaration": false,

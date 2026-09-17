@@ -86,13 +86,19 @@ harness run --spec <path>   build the feature described by a spec
   --max-attempts N          repair attempts before giving up (default 3)
   --model NAME              sonnet (default), opus, haiku, or a full model id
   --yes                     skip the first-run command confirmation
+  --json                    one JSON object per line, for CI
 ```
+
+Every stage reports what happened as a typed event; the watchable output above
+and `--json` are two renderers reading the same stream, so neither can drift
+from the other. `--json` carries raw values — `"costUsd": 0.48`, not
+`~$0.48 of tokens` — which is the whole reason the two are separate.
 
 ## What a run leaves behind
 
 ```
 .harness/runs/<timestamp>/
-  harness.log          one line per stage transition
+  events.jsonl         every event of the run, one JSON object per line
   spec.md              what the run was asked to build
   baseline/            install.txt, build.txt, test.txt, serve.txt — from before
                        the agent touched anything

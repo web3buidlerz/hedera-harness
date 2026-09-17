@@ -1,0 +1,82 @@
+/**
+ * Reading the SDK's message stream.
+ *
+ * Parsing only — what a tool call *was*. How it looks on a terminal belongs to
+ * a renderer, and lives in `render/terminal.ts`.
+ */
+
+/**
+ * Pulls the one line worth reporting out of an SDK message, or null when there
+ * is nothing to say. Tool inputs vary by tool, so this reads whichever field
+ * carries the subject and falls back to the tool name alone.
+ */
+export function describeMessage(message: unknown): { tool: string; argument: string } | null {
+  const candidate = message as { type?: string; message?: { content?: unknown } };
+  if (candidate.type !== "assistant" || !Array.isArray(candidate.message?.content)) return null;
+
+  for (const block of candidate.message.content as Array<Record<string, unknown>>) {
+    if (block["type"] !== "tool_use") continue;
+    const name = typeof block["name"] === "string" ? block["name"] : "tool";
+    return { tool: shortName(name), argument: subjectOf(block["input"]) };
+  }
+  return null;
+}
+
+/** `mcp__harness__submit_verdict` reads as `verdict` in a live feed. */
+function shortName(name: string): string {
+  const parts = name.split("__");
+  return parts[parts.length - 1] ?? name;
+}
+
+function subjectOf(input: unknown): string {
+  if (input === null || typeof input !== "object") return "";
+  const fields = input as Record<string, unknown>;
+  for (const key of ["command", "file_path", "path", "pattern", "url", "prompt", "description"]) {
+    const value = fields[key];
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
+  return "";
+}
+
+/** What an SDK `result` message says about the turn that just ended. */
+export interface Ending {
+  /** Turns the SDK counted, which is what `maxTurns` is enforced against. */
+  turns: number;
+  /** Cumulative for the session, so the last one wins rather than the sum. */
+  costUsd: number | undefined;
+  /** Set when the SDK stopped the agent itself, e.g. a turn limit. */
+  failure: string | null;
+}
+
+/**
+ * Reads a `result` message, or null for anything else.
+ *
+ * Both numbers were being got wrong. Turns were counted here as assistant
+ * messages, which reported 84 for a conversation the SDK measured at 41 and
+ * capped at 300 — so the figure on screen bore no fixed relation to the bound
+ * it was supposed to inform. And one conversation can end more than once: a
+ * background subagent finishing wakes it with a `task-notification` for a few
+ * more turns, arriving as a second result. Turns accumulate across those;
+ * `total_cost_usd` is already cumulative, so it must not.
+ */
+export function endingOf(message: unknown, maxTurns: number): Ending | null {
+  const candidate = message as {
+    type?: string;
+    num_turns?: number;
+    total_cost_usd?: number;
+    is_error?: boolean;
+    subtype?: string;
+  };
+  if (candidate.type !== "result") return null;
+  return {
+    turns: candidate.num_turns ?? 0,
+    costUsd: candidate.total_cost_usd,
+    failure: candidate.is_error === true ? describeStop(candidate.subtype, maxTurns) : null,
+  };
+}
+
+/** Why the SDK stopped the agent itself, in the harness's words rather than its own. */
+function describeStop(subtype: string | undefined, maxTurns: number): string {
+  if (subtype === "error_max_turns") return `it used all ${maxTurns} of its turns`;
+  return `it stopped early (${subtype ?? "error"})`;
+}
