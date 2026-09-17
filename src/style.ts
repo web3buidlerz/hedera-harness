@@ -1,3 +1,5 @@
+import type { Timings } from "./events.js";
+
 /**
  * Terminal styling, in the smallest form that does the job.
  *
@@ -66,3 +68,41 @@ export function frame(lines: string[]): string {
 function visibleWidth(text: string): number {
   return text.replace(/\x1b\[[0-9;]*m/g, "").length;
 }
+
+/* Layout helpers. Pure, and shared by the live renderer and `harness report` —
+ * a finished run has to read the same way as the run you watched. */
+
+/** `generate 7:46 · test 0:52 · evaluate 3:28` */
+export function describeTimings(timings: Timings): string {
+  return [
+    `generate ${formatDuration(timings.generateMs)}`,
+    `test ${formatDuration(timings.testMs)}`,
+    `evaluate ${formatDuration(timings.evaluateMs)}`,
+  ].join(" · ");
+}
+
+/** `  0:04` — a running clock, right-aligned so rows line up. */
+export function formatClock(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`.padStart(5);
+}
+
+/**
+ * `7:46` for anything over a minute, `0.3s` below it. A stage that really took
+ * 278ms rounded to `0:00` in the summary, which reads as "did not run" rather
+ * than "was instant".
+ */
+export function formatDuration(ms: number): string {
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const seconds = Math.round(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** Single line, ellipsis rather than wrapping — the transcript has the full text. */
+export function clip(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= ARGUMENT_WIDTH ? flat : `${flat.slice(0, ARGUMENT_WIDTH - 1)}…`;
+}
+
+/** Width to clip a tool's argument to, so one call is always one line. */
+const ARGUMENT_WIDTH = 96;
