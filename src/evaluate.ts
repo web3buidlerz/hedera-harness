@@ -87,48 +87,91 @@ const failureShape = z.object({
  * already expecting a broken app.
  */
 export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
-  const { repoRoot, run, attempt, appUrl } = options;
+  const { run, attempt, appUrl } = options;
 
   const workspace = await mkdtemp(join(tmpdir(), "harness-eval-"));
-  const evidenceDir = join(workspace, "evidence");
-  await mkdir(evidenceDir);
+  await mkdir(join(workspace, "evidence"));
   await cp(options.specPath, join(workspace, "spec.md"));
 
-  const captured: { verdict: Verdict | null; malformed: string | null } = {
-    verdict: null,
-    malformed: null,
-  };
-
-  const server = createSdkMcpServer({
-    name: "harness",
-    tools: [
-      tool(
-        TOOL,
-        "Report whether the running app satisfies the spec. Call this exactly once, at the end.",
-        {
-          pass: z.boolean().describe("true only if every requirement in the spec is met"),
-          failures: z
-            .array(failureShape)
-            .describe("Empty when passing. One entry per requirement that is not met."),
-        },
-        async (args) => {
-          captured.verdict = { pass: args.pass, failures: args.failures as Failure[] };
-          return { content: [{ type: "text", text: "Verdict recorded." }] };
-        },
-      ),
-    ],
-  });
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WALL_CLOCK_MS);
+  const captured: Captured = { verdict: null, malformed: null };
+  const server = verdictServer(captured);
   const transcript = await run.path(`attempt-${attempt}`, "evaluate.jsonl");
-  const startedAt = Date.now();
+
   emit({
     type: "phase:started",
     phase: "evaluate",
     attempt,
     detail: `${options.model} · blind · ${appUrl}`,
   });
+
+  let { outcome, sessionId } = await pass(options, workspace, server, transcript, {
+    prompt: brief(appUrl, hedera()),
+    captured,
+  });
+
+  if (outcome.type === "no-verdict") {
+    // Resumed, not restarted. A fresh evaluator would re-open the browser,
+    // re-read the chain and re-run every wait from zero — on the one real run
+    // where this fired, the restart repeated all 28 tool calls and doubled the
+    // cost of the evaluation. Continuing the session keeps the evidence it
+    // already gathered and only asks for the answer.
+    //
+    // It does not weaken the rule that a verdict is never re-rolled: that rule
+    // stops an evaluator diffing against its own previous verdict, and in a
+    // no-verdict case there is no previous verdict to diff against.
+    emit({
+      type: "note",
+      level: "warn",
+      text: `no verdict (${outcome.reason}) — asking the same evaluator to finish`,
+    });
+    captured.malformed = null;
+    ({ outcome } = await pass(options, workspace, server, transcript, {
+      prompt: nudge(outcome.reason),
+      captured,
+      resume: sessionId,
+    }));
+    if (outcome.type === "no-verdict") {
+      outcome = { type: "no-verdict", reason: `${outcome.reason} (asked twice)` };
+    }
+  }
+
+  // Evidence is collected whatever the outcome — a run that produced no verdict
+  // is exactly when you want to see what the evaluator was looking at.
+  await cp(join(workspace, "evidence"), await run.path(`attempt-${attempt}`, "evidence"), {
+    recursive: true,
+  });
+
+  if (outcome.type === "verdict") {
+    await writeFile(
+      await run.path(`attempt-${attempt}`, "verdict.json"),
+      `${JSON.stringify(outcome.verdict, null, 2)}\n`,
+    );
+  }
+  return outcome;
+}
+
+interface Captured {
+  verdict: Verdict | null;
+  malformed: string | null;
+}
+
+/**
+ * One turn of the evaluator, bounded on its own. Returns what the harness makes
+ * of it — a verdict, or one of the three ways there is not one.
+ */
+async function pass(
+  options: EvaluateOptions,
+  workspace: string,
+  server: ReturnType<typeof createSdkMcpServer>,
+  transcript: string,
+  turn: { prompt: string; captured: Captured; resume?: string | undefined },
+): Promise<{ outcome: Outcome; sessionId: string | undefined }> {
+  const { repoRoot, attempt } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WALL_CLOCK_MS);
+  const startedAt = Date.now();
+  let costUsd: number | undefined;
+  let sessionId: string | undefined;
 
   // The agent's Bash resolves `playwright-cli` from the harness's own install,
   // so the target repo does not have to depend on it.
@@ -137,10 +180,11 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
 
   try {
     const conversation = query({
-      prompt: brief(appUrl, hedera()),
+      prompt: turn.prompt,
       options: {
         cwd: workspace,
         model: options.model,
+        ...(turn.resume === undefined ? {} : { resume: turn.resume }),
         plugins: [{ type: "local", path: playwrightSkills() }],
         mcpServers: { harness: server },
         settingSources: [],
@@ -162,37 +206,87 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
       await appendFile(transcript, `${JSON.stringify(message)}\n`);
       const step = describeMessage(message);
       if (step !== null) emit({ type: "tool", tool: step.tool, argument: step.argument });
+      sessionId ??= message.session_id;
+      if (message.type === "result") {
+        costUsd = (message as { total_cost_usd?: number }).total_cost_usd;
+        // A bound the SDK enforces itself — a turn limit, a spend cap — arrives
+        // as an error result and *then* throws when the iterator is pulled
+        // again. Reading it here is what turns "the run died" into "no verdict,
+        // ask once more", which is what the bounds table always said it was.
+        const ended = message as { is_error?: boolean; subtype?: string };
+        if (ended.is_error === true) turn.captured.malformed = why(ended.subtype);
+      }
     }
   } catch (error) {
     if (controller.signal.aborted) {
-      captured.malformed = `the evaluator did not finish within ${WALL_CLOCK_MS / 60_000} minutes`;
-    } else {
+      turn.captured.malformed = `the evaluator did not finish within ${WALL_CLOCK_MS / 60_000} minutes`;
+    } else if (turn.captured.malformed === null) {
       throw error;
     }
+    // Otherwise the stream already said why it stopped, and the throw is the
+    // same news arriving twice.
   } finally {
     clearTimeout(timer);
     process.env["PATH"] = previousPath;
   }
 
-  // Evidence is collected whatever the outcome — a run that produced no
-  // verdict is exactly when you want to see what the evaluator was looking at.
-  await cp(evidenceDir, await run.path(`attempt-${attempt}`, "evidence"), { recursive: true });
-
-  const outcome = adjudicate(captured, workspace);
+  const outcome = adjudicate(turn.captured, workspace);
   emit({
     type: "evaluate:finished",
     attempt,
     verdict: outcome.type === "no-verdict" ? "none" : outcome.verdict.pass ? "pass" : "fail",
     findings: outcome.type === "no-verdict" ? 0 : outcome.verdict.failures.length,
+    costUsd,
     durationMs: Date.now() - startedAt,
   });
-  if (outcome.type === "verdict") {
-    await writeFile(
-      await run.path(`attempt-${attempt}`, "verdict.json"),
-      `${JSON.stringify(outcome.verdict, null, 2)}\n`,
-    );
-  }
-  return outcome;
+  return { outcome, sessionId };
+}
+
+/** Why the SDK ended a turn itself, in the harness's words rather than its own. */
+function why(subtype: string | undefined): string {
+  if (subtype === "error_max_turns") return `the evaluator used all ${MAX_TURNS} of its turns`;
+  return `the evaluator stopped early (${subtype ?? "error"})`;
+}
+
+function verdictServer(captured: Captured): ReturnType<typeof createSdkMcpServer> {
+  return createSdkMcpServer({
+    name: "harness",
+    tools: [
+      tool(
+        TOOL,
+        "Report whether the running app satisfies the spec. Call this exactly once, at the end.",
+        {
+          pass: z.boolean().describe("true only if every requirement in the spec is met"),
+          failures: z
+            .array(failureShape)
+            .describe("Empty when passing. One entry per requirement that is not met."),
+        },
+        async (args) => {
+          captured.verdict = { pass: args.pass, failures: args.failures as Failure[] };
+          return { content: [{ type: "text", text: "Verdict recorded." }] };
+        },
+      ),
+    ],
+  });
+}
+
+/**
+ * What the harness says when it intervenes. The evaluator that produced no
+ * verdict on the one real occurrence had not failed or got stuck — it had
+ * backgrounded a timer and ended its turn expecting to be woken, which is
+ * correct behaviour in an interactive session and fatal in this one.
+ */
+function nudge(reason: string): string {
+  return [
+    `Your turn ended without a usable verdict: ${reason}`,
+    "",
+    "Nothing resumed you automatically — this message is the harness intervening,",
+    "and it is the last turn you get. Do not start anything in the background and",
+    "do not wait to be notified. If you still need to observe something, do it now",
+    "with a command that blocks until it is finished.",
+    "",
+    `Then call ${TOOL}. You already have the evidence you gathered in evidence/.`,
+  ].join("\n");
 }
 
 /**
@@ -277,6 +371,12 @@ function brief(appUrl: string, chain: Hedera): string {
     "  so every finding can be checked afterwards",
     "",
     "You cannot see the source code and should not try; judge only observable behaviour.",
+    "",
+    "**You get one turn and nothing will resume you.** Never start a command in the",
+    "background and end your turn waiting to be notified — no notification can arrive,",
+    "and a turn that ends without a verdict throws the whole evaluation away. If you",
+    "need to wait, wait in the foreground: a blocking command costs nothing while it",
+    `runs, and you have ${WALL_CLOCK_MS / 60_000} minutes for the entire check.`,
     "",
     `When you are done, call ${TOOL} exactly once. Pass only if every requirement in the`,
     "spec is met. For each requirement that is not met, give one entry naming what a user",
