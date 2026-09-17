@@ -147,7 +147,7 @@ The run works on a new branch `harness/<timestamp>` created from the current com
 
 ```
 .harness/runs/<timestamp>/
-  harness.log          one line per stage transition
+  events.jsonl         every event of the run, one JSON object per line
   attempt-N/
     generate.jsonl     SDK messages
     build.txt          build output

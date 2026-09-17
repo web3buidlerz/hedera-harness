@@ -98,7 +98,7 @@ from the other. `--json` carries raw values — `"costUsd": 0.48`, not
 
 ```
 .harness/runs/<timestamp>/
-  harness.log          one line per stage transition
+  events.jsonl         every event of the run, one JSON object per line
   spec.md              what the run was asked to build
   baseline/            install.txt, build.txt, test.txt, serve.txt — from before
                        the agent touched anything

@@ -6,8 +6,7 @@ import { fileURLToPath } from "node:url";
 import test, { afterEach } from "node:test";
 import { type HarnessEvent, type Timings, collect, emit, reset, subscribe } from "../events.js";
 import { describeMessage } from "../messages.js";
-import { renderToJson } from "../render/json.js";
-import { renderToLog } from "../render/log.js";
+import { EVENTS_FILE, renderToFile, renderToJson } from "../render/json.js";
 import { renderToTerminal } from "../render/terminal.js";
 import { Run } from "../run.js";
 import { runStages } from "../test.js";
@@ -116,33 +115,25 @@ test("the terminal renderer formats data it was never handed as prose", async ()
   assert.doesNotMatch(output, /Read\s+\/repo\//);
 });
 
-test("harness.log is plain text and ignores the high-frequency events", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "harness-log-"));
-  renderToLog(dir);
+test("the run directory keeps a lossless record of the stream", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "harness-events-"));
+  renderToFile(dir);
   for (const event of STREAM) emit(event);
 
-  const written = await readFile(join(dir, "harness.log"), "utf8");
-  assert.doesNotMatch(written, /\x1b\[/, "the log must never carry escape codes");
+  const written = await readFile(join(dir, EVENTS_FILE), "utf8");
+  const recorded = written.trimEnd().split("\n").map((line) => JSON.parse(line) as HarnessEvent);
 
-  const messages = written.trimEnd().split("\n").map((line) => line.slice(line.indexOf(" ") + 1));
-  assert.deepEqual(messages, [
-    "run 2026-09-16T00-00-00-000Z",
-    "repo /repo",
-    "spec /repo/specs/x.md",
-    "from main at abcdef123456",
-    "max-attempts 3, model sonnet",
-    "check tooling",
-    "proposed install: npm install",
-    "proposed test: (none)",
-    "check no project skills. install them",
-    "baseline build: yarn build",
-    "generate attempt 1",
-    "generate attempt 1 done — 9 turns, 4 tool calls",
-    "attempt 1 committed 4f2a91bc0d33",
-    "attempt 1 FAILED — 0 open, 1 fixed, 2 new",
-    "  /status: renders undefined [evidence/a.png]",
-    "failed after 1 attempt(s)",
-  ]);
+  // Lossless is the point: the old harness.log dropped the tool feed and the
+  // command heartbeats, so a finished run could not be replayed from it.
+  assert.deepEqual(
+    recorded.map((event) => event.type),
+    STREAM.map((event) => event.type),
+  );
+  assert.deepEqual(
+    recorded.map(({ at: _at, ...event }: HarnessEvent & { at?: string }) => event),
+    STREAM,
+    "events must round-trip through the file unchanged",
+  );
 });
 
 test("--json emits one parseable object per event, carrying the raw fields", async () => {

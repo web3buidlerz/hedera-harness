@@ -11,8 +11,7 @@ import { killTrackedChildren } from "./commands.js";
 import { commitWork, createBranch, currentBranch, headCommit, repoRoot, switchBranch } from "./git.js";
 import { Run, ensureExcluded, timestamp } from "./run.js";
 import { type Timings, emit, subscribe } from "./events.js";
-import { renderToJson } from "./render/json.js";
-import { renderToLog } from "./render/log.js";
+import { renderToFile, renderToJson } from "./render/json.js";
 import { renderToTerminal } from "./render/terminal.js";
 import { red } from "./style.js";
 
@@ -181,7 +180,7 @@ async function main(argv: string[]): Promise<number> {
 
   // Renderers attach before the first event, and the log one needs the run
   // directory — which is why `Run.create` comes first.
-  renderToLog(run.dir);
+  renderToFile(run.dir);
   if (options.json) renderToJson();
   else renderToTerminal();
   // Read back off the stream rather than tracked alongside it, so an
