@@ -141,6 +141,7 @@ Machine-level settings are environment variables, deliberately kept out of `harn
 | `HEDERA_NETWORK` | `testnet` (default), `previewnet`, `mainnet`. |
 | `HEDERA_MIRROR_NODE` | Overrides the mirror node URL derived from the network. |
 | `HEDERA_OPERATOR_ID` | Account the evaluator is told to inspect on chain. Never a key. |
+| `NO_COLOR` | Turns off colour. Already off when stdout is not a terminal, so piping or redirecting needs nothing. |
 
 Every stage is bounded: 60 minutes for generation, 20 for evaluation, 20 per command, 2 minutes for the dev server to answer.
 

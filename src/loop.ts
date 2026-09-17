@@ -7,6 +7,7 @@ import { commitWork } from "./git.js";
 import { formatDuration } from "./progress.js";
 import type { Run } from "./run.js";
 import { startServer } from "./serve.js";
+import { dim, green, heading, red, yellow } from "./style.js";
 import { type StageFailure, describeFailure, runStages } from "./test.js";
 
 /** How much of a failing command's output the repair prompt carries. */
@@ -96,7 +97,8 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     // reasoning the agent has already committed to.
     if (repeated) {
       session = undefined;
-      await run.log(`attempt ${attempt + 1} starts a fresh session — same failure twice`);
+      const note = `attempt ${attempt + 1} starts a fresh session — same failure twice`;
+      await run.log(note, yellow(note));
     }
 
     previous = new Set(feedback.hashes);
@@ -115,6 +117,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
 async function assess(options: LoopOptions, attempt: number, timings: Timings): Promise<Feedback> {
   const { config, repoRoot, run } = options;
 
+  console.log(heading("test", `attempt ${attempt}`));
   const testStarted = Date.now();
   const failure = await runStages({ config, repoRoot, run, prefix: `attempt-${attempt}` });
   timings.testMs += Date.now() - testStarted;
@@ -129,11 +132,11 @@ async function assess(options: LoopOptions, attempt: number, timings: Timings): 
     repoRoot,
     options.specInRepo === undefined ? [] : [options.specInRepo],
   );
-  await run.log(
+  const committed =
     commit === null
       ? `attempt ${attempt} changed nothing`
-      : `attempt ${attempt} committed ${commit.slice(0, 12)}`,
-  );
+      : `attempt ${attempt} committed ${commit.slice(0, 12)}`;
+  await run.log(committed, dim(`  ${committed}`));
 
   if (failure !== null) return fromStage(failure);
 
@@ -161,7 +164,8 @@ async function withOneRetry(
   const first = await evaluate({ repoRoot, run, specPath, attempt, appUrl, model: options.model });
   if (first.type === "verdict") return first;
 
-  await run.log(`no verdict (${first.reason}) — evaluating once more against the same commit`);
+  const retry = `no verdict (${first.reason}) — evaluating once more against the same commit`;
+  await run.log(retry, yellow(retry));
   const second = await evaluate({ repoRoot, run, specPath, attempt, appUrl, model: options.model });
   if (second.type === "verdict") return second;
 
@@ -207,7 +211,7 @@ async function report(
   previous: Set<string>,
 ): Promise<boolean> {
   if (feedback.ok) {
-    await run.log(`attempt ${attempt} PASSED`);
+    await run.log(`attempt ${attempt} PASSED`, `\nattempt ${attempt} ${green("PASSED")}`);
     return false;
   }
 
@@ -215,10 +219,13 @@ async function report(
   const fresh = feedback.hashes.filter((hash) => !previous.has(hash));
   const fixed = [...previous].filter((hash) => !feedback.hashes.includes(hash));
 
+  const tally = `${open.length} open, ${fixed.length} fixed, ${fresh.length} new`;
   await run.log(
-    `attempt ${attempt} FAILED — ${open.length} open, ${fixed.length} fixed, ${fresh.length} new`,
+    `attempt ${attempt} FAILED — ${tally}`,
+    `\nattempt ${attempt} ${red("FAILED")} ${dim(`— ${tally}`)}`,
   );
-  for (const line of feedback.results) await run.log(`  ${line}`);
+  // Findings stay at full strength: they are the reason to be reading this.
+  for (const line of feedback.results) await run.log(`  ${line}`, `  ${line}`);
   return open.length > 0;
 }
 
