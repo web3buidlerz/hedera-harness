@@ -12,23 +12,28 @@ import { commitWork, createBranch, currentBranch, headCommit, repoRoot, switchBr
 import { Run, ensureExcluded, timestamp } from "./run.js";
 import { type Timings, emit, subscribe } from "./events.js";
 import { renderToFile, renderToJson } from "./render/json.js";
+import { report } from "./render/report.js";
 import { renderToTerminal } from "./render/terminal.js";
 import { red } from "./style.js";
 
 const USAGE = `usage: harness init [name] [--model NAME] [--yes]
        harness run --spec <path> [--max-attempts N] [--model NAME] [--yes] [--json]
+       harness report [run] [--full]
 
 Run from inside the target repository.
 
   init [name]         set the project up: work out its commands, and draft
                       specs/<name>.md for you to fill in (default: feature)
   run --spec <path>   build the feature described by a spec
+  report [run]        read a finished run: what it did, what the evaluator
+                      checked, and whether to believe it (default: the latest)
 
   --spec <path>        the feature to build
   --max-attempts N    repair attempts before giving up (default 3)
   --model NAME        agent model: sonnet (default), opus, haiku, or a full id
   --yes               skip the first-run command confirmation
-  --json              one JSON object per line instead of the watchable output`;
+  --json              one JSON object per line instead of the watchable output
+  --full              report: include both agents' full tool feeds`;
 
 class UsageError extends Error {}
 
@@ -98,7 +103,7 @@ function onInterrupt(): void {
   void cancel();
 }
 
-type Command = "init" | "run";
+type Command = "init" | "run" | "report";
 
 interface Options {
   command: Command;
@@ -109,6 +114,7 @@ interface Options {
   model: string;
   assumeYes: boolean;
   json: boolean;
+  full: boolean;
 }
 
 /** Pinned rather than inherited, so a run does not change meaning when the CLI's default moves. */
@@ -117,7 +123,7 @@ const DEFAULT_MODEL = process.env["HARNESS_MODEL"] ?? "sonnet";
 function parse(argv: string[]): Options {
   const [command, ...rest] = argv;
   if (command === undefined || command === "--help" || command === "-h") throw new UsageError(USAGE);
-  if (command !== "run" && command !== "init") {
+  if (command !== "run" && command !== "init" && command !== "report") {
     throw new UsageError(`unknown command "${command}"\n\n${USAGE}`);
   }
 
@@ -133,6 +139,7 @@ function parse(argv: string[]): Options {
         model: { type: "string", default: DEFAULT_MODEL },
         yes: { type: "boolean", default: false },
         json: { type: "boolean", default: false },
+        full: { type: "boolean", default: false },
       },
       strict: true,
     }));
@@ -157,6 +164,7 @@ function parse(argv: string[]): Options {
     model: values.model,
     assumeYes: values.yes,
     json: values.json,
+    full: values.full,
   };
 }
 
@@ -170,6 +178,19 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const root = await repoRoot(process.cwd());
+
+  // Reading a finished run touches nothing: no run directory, no branch, no
+  // clean-tree requirement. It is the one command that works on a repo in any
+  // state, which is exactly the state you are in when you want it.
+  if (options.command === "report") {
+    await report({
+      repoRoot: root,
+      run: positionalRun(argv),
+      full: options.full,
+    });
+    return 0;
+  }
+
   context.repoRoot = root;
   await ensureExcluded(root);
 
@@ -263,6 +284,12 @@ async function main(argv: string[]): Promise<number> {
     dir: run.dir,
   });
   return result.passed ? 0 : 1;
+}
+
+/** `harness report <run>` — the optional run id, which shares `init`'s positional slot. */
+function positionalRun(argv: string[]): string | undefined {
+  const [, ...rest] = argv;
+  return rest.find((argument) => !argument.startsWith("--"));
 }
 
 /** The spec's repo-relative path, or undefined when it lives outside the repo. */
