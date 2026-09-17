@@ -5,11 +5,12 @@ import { createInterface } from "node:readline/promises";
 import { type Command, runCommand } from "./commands.js";
 import { CONFIG_FILE, type HarnessConfig, readConfig, writeConfig } from "./config.js";
 import { emit } from "./events.js";
+import { describeFailure, fromStage } from "./failure.js";
 import { commit, dirtyPaths } from "./git.js";
 import { type Proposal, resolveCommands } from "./resolve.js";
 import type { Run } from "./run.js";
 import { ServeError, startServer } from "./serve.js";
-import { describeFailure, runStages } from "./test.js";
+import { runStages } from "./test.js";
 
 /** See PLAN-V2 § Bounds. Starting points, to be tuned once there are real runs. */
 const RESOLVE_TIMEOUT_MS = 5 * 60_000;
@@ -194,7 +195,7 @@ async function verifyByRunning(
   const failure = await runStages({ config, repoRoot, run, prefix: "baseline" });
   if (failure !== null) {
     throw new DoctorError(
-      `baseline ${describeFailure(failure)} on the untouched repo. ` +
+      `baseline ${describeFailure(fromStage(failure))} on the untouched repo. ` +
         `Either the command is wrong or the project is already broken — ` +
         `output is in ${join(run.dir, failure.artifact)}`,
     );

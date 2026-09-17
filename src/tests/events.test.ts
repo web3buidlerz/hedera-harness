@@ -92,7 +92,25 @@ const STREAM: HarnessEvent[] = [
     open: 0,
     fixed: 1,
     fresh: 2,
-    results: ["/status: renders undefined [evidence/a.png]"],
+    failures: [
+      {
+        kind: "verdict",
+        id: "aaaaaaaaaaaa",
+        where: "/status",
+        what: "renders undefined while loading",
+        evidence: ["a.png"],
+      },
+      {
+        kind: "stage",
+        id: "bbbbbbbbbbbb",
+        stage: "build",
+        command: { run: "yarn next:build" },
+        code: 1,
+        timedOut: false,
+        error: "Error: Cannot find module N",
+        artifact: "attempt-1/build.txt",
+      },
+    ],
   },
   { type: "run:finished", passed: false, cancelled: false, attempts: 1, branch: "harness/x", timings: NO_TIMINGS, dir: "/repo/.harness/runs/x" },
 ];
@@ -110,6 +128,9 @@ test("the terminal renderer formats data it was never handed as prose", async ()
   assert.match(output, /done — 9 turns, 4 tool calls, ~\$0\.48 of tokens/);
   assert.match(output, /attempt 1 committed 4f2a91bc0d33\b/);
   assert.match(output, /FAILED.*— 0 open, 1 fixed, 2 new/);
+  // Fields, glued into a sentence here and only here.
+  assert.match(output, /\/status: renders undefined while loading \[a\.png\]/);
+  assert.match(output, /build: `yarn next:build` exited 1/);
   // The repo root is stripped from tool arguments, which only the renderer knows.
   assert.match(output, /Read\s+packages\/app\/page\.tsx/);
   assert.doesNotMatch(output, /Read\s+\/repo\//);

@@ -1,13 +1,13 @@
-import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import type { HarnessConfig } from "./config.js";
 import { type Outcome, evaluate } from "./evaluate.js";
 import { generate } from "./generate.js";
 import { commitWork } from "./git.js";
 import { type Timings, emit } from "./events.js";
+import { type AttemptFailure, describeFailure, fromStage, fromVerdict } from "./failure.js";
 import type { Run } from "./run.js";
 import { startServer } from "./serve.js";
-import { type StageFailure, describeFailure, runStages } from "./test.js";
+import { type StageFailure, runStages } from "./test.js";
 
 /** How much of a failing command's output the repair prompt carries. */
 const OUTPUT_TAIL = 4_000;
@@ -38,9 +38,7 @@ export type { Timings };
 /** What an attempt failed on, in the shape the diagram uses for `feedback.json`. */
 interface Feedback {
   ok: boolean;
-  results: string[];
-  /** Stable identity per failure, so repeats across attempts are detectable. */
-  hashes: string[];
+  failures: AttemptFailure[];
   /** Command output, carried to the repair prompt but not to `feedback.json`. */
   detail?: string;
 }
@@ -99,7 +97,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
       });
     }
 
-    previous = new Set(feedback.hashes);
+    previous = new Set(feedback.failures.map((failure) => failure.id));
     prompt = repairPrompt(feedback);
   }
 
@@ -132,12 +130,12 @@ async function assess(options: LoopOptions, attempt: number, timings: Timings): 
   );
   emit({ type: "committed", attempt, sha: commit });
 
-  if (failure !== null) return fromStage(failure);
+  if (failure !== null) return stageFeedback(failure);
 
   const server = await startServer(config.serve, repoRoot);
   const evaluateStarted = Date.now();
   try {
-    return fromVerdict(await withOneRetry(options, attempt, server.url));
+    return verdictFeedback(await withOneRetry(options, attempt, server.url));
   } finally {
     timings.evaluateMs += Date.now() - evaluateStarted;
     await server.stop();
@@ -171,30 +169,18 @@ async function withOneRetry(
   );
 }
 
-function fromStage(failure: StageFailure): Feedback {
-  const line = describeFailure(failure);
+function stageFeedback(failure: StageFailure): Feedback {
   return {
     ok: false,
-    results: [line],
-    hashes: [identity(failure.stage, firstError(failure.output))],
+    failures: [fromStage(failure)],
     detail: failure.output.slice(-OUTPUT_TAIL),
   };
 }
 
-function fromVerdict(outcome: Outcome): Feedback {
+function verdictFeedback(outcome: Outcome): Feedback {
   if (outcome.type !== "verdict") throw new AbortRun(outcome.reason);
-  if (outcome.verdict.pass) return { ok: true, results: [], hashes: [] };
-
-  return {
-    ok: false,
-    results: outcome.verdict.failures.map(
-      (failure) => `${failure.where}: ${failure.what} [${failure.evidence.join(", ")}]`,
-    ),
-    // Hashed on `where` alone. `what` is prose from a fresh evaluator, so it
-    // is worded differently every attempt and would make one recurring bug
-    // look like a new one each time — which is exactly the signal this is for.
-    hashes: outcome.verdict.failures.map((failure) => identity(failure.where)),
-  };
+  if (outcome.verdict.pass) return { ok: true, failures: [] };
+  return { ok: false, failures: fromVerdict(outcome.verdict) };
 }
 
 /**
@@ -203,13 +189,13 @@ function fromVerdict(outcome: Outcome): Feedback {
  */
 function report(attempt: number, feedback: Feedback, previous: Set<string>): boolean {
   if (feedback.ok) {
-    emit({ type: "attempt:finished", attempt, passed: true, open: 0, fixed: 0, fresh: 0, results: [] });
+    emit({ type: "attempt:finished", attempt, passed: true, open: 0, fixed: 0, fresh: 0, failures: [] });
     return false;
   }
 
-  const open = feedback.hashes.filter((hash) => previous.has(hash));
-  const fresh = feedback.hashes.filter((hash) => !previous.has(hash));
-  const fixed = [...previous].filter((hash) => !feedback.hashes.includes(hash));
+  const now = feedback.failures.map((failure) => failure.id);
+  const open = now.filter((id) => previous.has(id));
+  const fixed = [...previous].filter((id) => !now.includes(id));
 
   emit({
     type: "attempt:finished",
@@ -217,8 +203,8 @@ function report(attempt: number, feedback: Feedback, previous: Set<string>): boo
     passed: false,
     open: open.length,
     fixed: fixed.length,
-    fresh: fresh.length,
-    results: feedback.results,
+    fresh: now.length - open.length,
+    failures: feedback.failures,
   });
   return open.length > 0;
 }
@@ -227,7 +213,7 @@ function repairPrompt(feedback: Feedback): string {
   return [
     "That attempt did not pass. What went wrong:",
     "",
-    ...feedback.results.map((line) => `- ${line}`),
+    ...feedback.failures.map((failure) => `- ${describeFailure(failure)}`),
     feedback.detail === undefined ? "" : `\n${feedback.detail}`,
     "",
     "Fix it, then stop. Do not start the dev server or run the checks yourself —",
@@ -237,20 +223,8 @@ function repairPrompt(feedback: Feedback): string {
     .join("\n");
 }
 
-/** First line that looks like an error, so cosmetic output changes do not shift the hash. */
-function firstError(output: string): string {
-  const line = output
-    .split("\n")
-    .find((candidate) => /\b(error|failed|cannot|not found|exception)\b/i.test(candidate));
-  return (line ?? output.split("\n")[0] ?? "").trim().replace(/\d+/g, "N").slice(0, 200);
-}
-
-function identity(...parts: string[]): string {
-  return createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 12);
-}
-
 async function writeFeedback(run: Run, attempt: number, feedback: Feedback): Promise<void> {
-  const body = { ok: feedback.ok, results: feedback.results };
+  const body = { ok: feedback.ok, failures: feedback.failures };
   await writeFile(
     await run.path(`attempt-${attempt}`, "feedback.json"),
     `${JSON.stringify(body, null, 2)}\n`,

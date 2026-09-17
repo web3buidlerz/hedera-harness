@@ -2,6 +2,7 @@ import { relative } from "node:path";
 import { describe } from "../commands.js";
 import { CONFIG_FILE } from "../config.js";
 import { type HarnessEvent, type Timings, subscribe } from "../events.js";
+import { describeFailure } from "../failure.js";
 import { bold, dim, frame, green, heading, red, row, tick, warn, yellow } from "../style.js";
 
 /** Width to clip a tool's argument to, so one call is always one line. */
@@ -118,7 +119,7 @@ export function renderToTerminal(): () => void {
         const tally = `${event.open} open, ${event.fixed} fixed, ${event.fresh} new`;
         console.log(`\nattempt ${event.attempt} ${red("FAILED")} ${dim(`— ${tally}`)}`);
         // Findings stay at full strength: they are the reason to be reading this.
-        for (const line of event.results) console.log(`  ${line}`);
+        for (const failure of event.failures) console.log(`  ${describeFailure(failure)}`);
         return;
       }
 

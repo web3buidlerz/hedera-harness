@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type Command, type CommandResult, describe, runCommand } from "./commands.js";
+import { type Command, type CommandResult, runCommand } from "./commands.js";
 import { emit } from "./events.js";
 import type { HarnessConfig } from "./config.js";
 import type { Run } from "./run.js";
@@ -110,14 +110,6 @@ async function runStage(
 
 function succeeded(result: CommandResult): boolean {
   return result.code === 0 && !result.timedOut;
-}
-
-/** One line per failure, in the shape the diagram uses for `feedback.json`. */
-export function describeFailure(failure: StageFailure): string {
-  const what = failure.timedOut
-    ? `timed out after ${COMMAND_TIMEOUT_MS / 60_000} minutes`
-    : `exited ${failure.code}`;
-  return `${failure.stage}: \`${describe(failure.command)}\` ${what}`;
 }
 
 /**

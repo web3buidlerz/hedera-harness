@@ -13,6 +13,7 @@
  * JSON renderer is reduced to quoting the terminal one.
  */
 import type { Command } from "./commands.js";
+import type { AttemptFailure } from "./failure.js";
 
 /** The four stages of the loop. Named `Phase` to leave `Stage` to the commands. */
 export type Phase = "doctor" | "generate" | "test" | "evaluate";
@@ -74,7 +75,8 @@ export type HarnessEvent =
       open: number;
       fixed: number;
       fresh: number;
-      results: string[];
+      /** Fields, not sentences — a report groups by these and CI gates on them. */
+      failures: AttemptFailure[];
     }
   | { type: "branch"; branch: string }
   /** DOCTOR's proposed commands, before the operator confirms them. */

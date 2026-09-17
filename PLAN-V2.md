@@ -76,7 +76,7 @@ On a repair attempt, the same session is resumed with the failure as the next me
 
 Each failure gets an identity — the failing command plus a normalised first error line, or the `where` of each verdict failure — hashed and recorded. A verdict failure is hashed on its locator only, never on its description: the evaluator is fresh every attempt and words the same bug differently each time, which would make one recurring failure look like a new one and stop the reset from ever firing. Two attempts producing the same hash means the resumed session is stuck on it, so the next attempt starts a fresh session with the failure as its opening prompt instead of resuming. This is the whole convergence mechanism: it tells the report whether an attempt fixed anything or traded one failure for another, and it is the only way out of a session that has talked itself into a corner.
 
-Every attempt also writes `feedback.json` — `{ ok: boolean, results: string[] }`, one line per failure, whichever stage produced it. The resumed session does not read it; the failure reaches the agent as the next message in its own conversation. The file exists so a human reviewing the branch afterwards can see what each attempt was told without replaying a transcript, and so a fresh session after a reset has something to be seeded with.
+Every attempt also writes `feedback.json` — `{ ok: boolean, failures: AttemptFailure[] }`, one entry per failure, whichever stage produced it. A failure is fields rather than a sentence — a stage failure carries its stage, command, exit code, normalised first error line and the path to its full output; a verdict failure carries `where`, `what` and its evidence. Both carry the `id` the harness hashes them to, so a reader can follow one failure across attempts rather than re-deriving it. Gluing those fields into a line of prose is a renderer's job, done once. The resumed session does not read it; the failure reaches the agent as the next message in its own conversation. The file exists so a human reviewing the branch afterwards can see what each attempt was told without replaying a transcript, and so a fresh session after a reset has something to be seeded with.
 
 ### TEST
 
@@ -154,7 +154,7 @@ The run works on a new branch `harness/<timestamp>` created from the current com
     test.txt           test output
     evaluate.jsonl     SDK messages
     verdict.json       submit_verdict payload, exactly as the evaluator sent it
-    feedback.json      { ok, results } — what this attempt failed on, for review
+    feedback.json      { ok, failures } — what this attempt failed on, for review
     evidence/          playwright-cli screenshots and snapshots
   result.json          { passed, attempts, branch, failures: per attempt, by hash }
 ```
