@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { describeFailure, fromStage, fromVerdict } from "../failure.js";
+import { endingOf } from "../messages.js";
 import type { StageFailure } from "../test.js";
 
 function stage(output: string, over: Partial<StageFailure> = {}): StageFailure {
@@ -83,4 +84,39 @@ test("the repair prompt says what went wrong, in full", () => {
     describeFailure({ kind: "verdict", id: "x", where: "/a", what: "broken", evidence: ["p.png"] }),
     "/a: broken [p.png]",
   );
+});
+
+/**
+ * Both numbers on the generation summary were wrong, in ways that only showed
+ * against a real transcript: turns were counted as assistant messages (84 for a
+ * conversation the SDK measured at 41 and capped at 300), and one conversation
+ * can end twice when a background subagent wakes it with a task-notification.
+ */
+test("turns accumulate across wake-ups; cost does not", () => {
+  const stream = [
+    { type: "assistant" },
+    { type: "result", num_turns: 39, total_cost_usd: 0.62, is_error: false },
+    { type: "assistant" },
+    // The second ending: a background subagent finished and woke the session.
+    { type: "result", num_turns: 2, total_cost_usd: 0.7, is_error: false, origin: { kind: "task-notification" } },
+  ];
+  let turns = 0;
+  let cost: number | undefined;
+  for (const message of stream) {
+    const ending = endingOf(message, 300);
+    if (ending === null) continue;
+    turns += ending.turns;
+    cost = ending.costUsd;
+  }
+  assert.equal(turns, 41, "turns are per wake-up, so they sum");
+  assert.equal(cost, 0.7, "total_cost_usd is already cumulative, so the last one wins");
+});
+
+test("a bound the SDK enforces itself is reported as such", () => {
+  assert.equal(
+    endingOf({ type: "result", is_error: true, subtype: "error_max_turns" }, 300)?.failure,
+    "it used all 300 of its turns",
+  );
+  assert.equal(endingOf({ type: "result", is_error: false }, 300)?.failure, null);
+  assert.equal(endingOf({ type: "assistant" }, 300), null);
 });
