@@ -20,6 +20,8 @@ const ARGUMENT_WIDTH = 96;
 export function renderToTerminal(): () => void {
   let phaseStartedAt = Date.now();
   let repoRoot = "";
+  /** The branch the run will put you back on, so the end can say so. */
+  let startedFrom = "";
 
   const elapsed = (): string => formatClock(Date.now() - phaseStartedAt);
 
@@ -27,6 +29,7 @@ export function renderToTerminal(): () => void {
     switch (event.type) {
       case "run:started": {
         repoRoot = event.repo;
+        startedFrom = event.from;
         // Read once, at a glance, to confirm the run is pointed where you think
         // it is. Labels dim, values at full strength — the values are the part
         // being checked.
@@ -169,6 +172,15 @@ export function renderToTerminal(): () => void {
         // one stream holds the whole narrative, so `harness run > log.txt`
         // captures it all. Only a thrown error reaches stderr.
         console.log(`\n${frame(lines)}\n`);
+
+        // A run announces "working on <branch>" when it starts and then puts
+        // you back where you began. Leaving that second move unsaid is how a
+        // passing run reads as a failed one: you go to look at the app, you are
+        // on your own branch, and the feature is not there.
+        if (event.branch !== null) {
+          console.log(dim(`the work is on a branch — you are back on ${startedFrom}:`));
+          console.log(`  git switch ${event.branch}\n`);
+        }
         return;
       }
     }
