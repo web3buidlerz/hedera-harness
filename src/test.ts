@@ -18,6 +18,8 @@ export interface StageFailure {
   command: Command;
   code: number | null;
   timedOut: boolean;
+  /** The bound this command ran under. Carried so nothing has to hardcode it to say so. */
+  timeoutMs: number;
   /** Where the full output was written, for the repair prompt to point at. */
   artifact: string;
   output: string;
@@ -103,6 +105,7 @@ async function runStage(
     command,
     code: result.code,
     timedOut: result.timedOut,
+    timeoutMs: COMMAND_TIMEOUT_MS,
     artifact,
     output: result.output,
   };

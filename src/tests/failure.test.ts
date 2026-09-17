@@ -9,6 +9,7 @@ function stage(output: string, over: Partial<StageFailure> = {}): StageFailure {
     command: { run: "yarn next:build" },
     code: 1,
     timedOut: false,
+    timeoutMs: 20 * 60_000,
     artifact: "attempt-1/build.txt",
     output,
     ...over,
@@ -63,10 +64,21 @@ test("a different error in the same stage is a different failure", () => {
 });
 
 test("the fields carried are the ones a reader needs, not a sentence", () => {
-  const failure = fromStage(stage("Error: boom", { timedOut: true, code: null }));
+  const failure = fromStage(stage("Error: boom"));
   assert.equal(failure.kind === "stage" && failure.artifact, "attempt-1/build.txt");
-  // Gluing happens once, here, and only for a human.
-  assert.equal(describeFailure(failure), "build: `yarn next:build` timed out");
+});
+
+/**
+ * These two strings are what the *agent* is told went wrong, so they are an
+ * interface, not cosmetics. Restructuring the type behind them silently dropped
+ * "after 20 minutes" from the timeout case once already — which is the
+ * difference between telling the agent its command hung and telling it nothing.
+ */
+test("the repair prompt says what went wrong, in full", () => {
+  assert.equal(
+    describeFailure(fromStage(stage("Error: boom", { timedOut: true, code: null }))),
+    "build: `yarn next:build` timed out after 20 minutes",
+  );
   assert.equal(
     describeFailure({ kind: "verdict", id: "x", where: "/a", what: "broken", evidence: ["p.png"] }),
     "/a: broken [p.png]",

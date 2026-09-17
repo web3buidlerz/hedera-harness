@@ -107,6 +107,7 @@ const STREAM: HarnessEvent[] = [
         command: { run: "yarn next:build" },
         code: 1,
         timedOut: false,
+        timeoutMs: 1_200_000,
         error: "Error: Cannot find module N",
         artifact: "attempt-1/build.txt",
       },

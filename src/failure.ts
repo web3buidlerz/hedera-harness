@@ -26,6 +26,8 @@ export type AttemptFailure =
       command: Command;
       code: number | null;
       timedOut: boolean;
+      /** The bound the command ran under, so the reason it was killed is legible. */
+      timeoutMs: number;
       /** The first line that looked like an error, normalised. What the hash is built from. */
       error: string;
       /** Run-relative path to the full output, e.g. `attempt-2/build.txt`. */
@@ -51,6 +53,7 @@ export function fromStage(failure: StageFailure): AttemptFailure {
     command: failure.command,
     code: failure.code,
     timedOut: failure.timedOut,
+    timeoutMs: failure.timeoutMs,
     error,
     artifact: failure.artifact,
   };
@@ -75,7 +78,12 @@ export function describeFailure(failure: AttemptFailure): string {
   if (failure.kind === "verdict") {
     return `${failure.where}: ${failure.what} [${failure.evidence.join(", ")}]`;
   }
-  const what = failure.timedOut ? "timed out" : `exited ${failure.code}`;
+  // The bound belongs in the sentence: "timed out" alone does not tell the
+  // agent whether its command hung or was merely slow, and that decides
+  // whether the fix is to make it faster or to stop it blocking.
+  const what = failure.timedOut
+    ? `timed out after ${Math.round(failure.timeoutMs / 60_000)} minutes`
+    : `exited ${failure.code}`;
   return `${failure.stage}: \`${describe(failure.command)}\` ${what}`;
 }
 
