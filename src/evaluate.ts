@@ -258,7 +258,13 @@ function verdictServer(captured: Captured): ReturnType<typeof createSdkMcpServer
         },
         async (args) => {
           captured.verdict = { pass: args.pass, failures: args.failures as Failure[] };
-          return { content: [{ type: "text", text: "Verdict recorded." }] };
+          // Answering ends the turn. Without this the evaluator decides for
+          // itself when it is finished, and the one time it got that wrong it
+          // ended without answering at all.
+          return {
+            content: [{ type: "text", text: "Verdict recorded." }],
+            _meta: { "claude/endTurn": true },
+          };
         },
       ),
     ],
