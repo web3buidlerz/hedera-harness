@@ -1,3 +1,4 @@
+import { join, relative } from "node:path";
 import { writeFile } from "node:fs/promises";
 import type { HarnessConfig } from "./config.js";
 import { type Outcome, evaluate } from "./evaluate.js";
@@ -107,7 +108,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     }
 
     previous = new Set(feedback.failures.map((failure) => failure.id));
-    prompt = repairPrompt(feedback);
+    prompt = repairPrompt(feedback, join(relative(repoRoot, run.dir), `attempt-${attempt}`));
   }
 
   await writeResult(run, { passed: false, attempts: history.length, branch: options.branch, timings, skills, history });
@@ -193,11 +194,25 @@ function report(attempt: number, feedback: Feedback, previous: Set<string>): boo
   return open.length > 0;
 }
 
-function repairPrompt(feedback: Feedback): string {
+/**
+ * What the agent is told went wrong.
+ *
+ * A stage failure carries the command's own output, so it explains itself. A
+ * verdict failure is one sentence from someone who watched the app in a browser
+ * — so it gets the evidence too, by a path the agent can actually open. The
+ * evaluator saves screenshots, page snapshots and saved responses, all of them
+ * readable, and citing them by bare filename made them unfindable.
+ */
+function repairPrompt(feedback: Feedback, artifacts: string): string {
   return [
     "That attempt did not pass. What went wrong:",
     "",
-    ...feedback.failures.map((failure) => `- ${describeFailure(failure)}`),
+    ...feedback.failures.flatMap((failure) => [
+      `- ${describeFailure(failure)}`,
+      ...(failure.kind === "verdict"
+        ? failure.evidence.map((item) => `  ${located(item, artifacts)}`)
+        : [`  full output: ${join(artifacts, `${failure.stage}.txt`)}`]),
+    ]),
     feedback.detail === undefined ? "" : `\n${feedback.detail}`,
     "",
     "Fix it, then stop. Do not start the dev server or run the checks yourself —",
@@ -205,6 +220,11 @@ function repairPrompt(feedback: Feedback): string {
   ]
     .filter((line) => line !== "")
     .join("\n");
+}
+
+/** Evidence is a file the evaluator saved, or a URL it read. Only the first needs a path. */
+function located(evidence: string, artifacts: string): string {
+  return /^https?:\/\//.test(evidence) ? evidence : join(artifacts, "evidence", evidence);
 }
 
 async function writeFeedback(run: Run, attempt: number, feedback: Feedback): Promise<void> {
