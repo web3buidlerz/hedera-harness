@@ -25,10 +25,10 @@ afterEach(() => reset());
  * Only the two agent calls are stubbed. The commands, the commit and the dev
  * server are real.
  */
-function fails(where: string): Outcome {
+function fails(where: string, evidence = ["shot.png"]): Outcome {
   return {
     type: "verdict",
-    verdict: { pass: false, failures: [{ what: "broken", where, evidence: ["shot.png"] }] },
+    verdict: { pass: false, failures: [{ what: "broken", where, evidence }] },
   };
 }
 
@@ -153,6 +153,14 @@ test("the repair prompt carries the failure and a path to its evidence", async (
   assert.match(repair, /That attempt did not pass/);
   assert.match(repair, /\/a: broken/);
   assert.match(repair, /attempt-1\/evidence\/shot\.png/, "evidence must be given as a path");
+});
+
+test("a citation already prefixed with evidence/ is not doubled", async () => {
+  const driven = await drive([fails("/a", ["evidence/shot.png"]), PASSES]);
+  const repair = driven.generations[1]?.prompt ?? "";
+
+  assert.match(repair, /attempt-1\/evidence\/shot\.png/);
+  assert.doesNotMatch(repair, /evidence\/evidence/, "the path must stay openable");
 });
 
 test("result.json records every attempt, with the ids that identify a repeat", async () => {

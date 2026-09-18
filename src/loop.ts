@@ -1,7 +1,7 @@
 import { join, relative } from "node:path";
 import { writeFile } from "node:fs/promises";
 import type { HarnessConfig } from "./config.js";
-import { type Outcome, evaluate } from "./evaluate.js";
+import { type Outcome, cited, evaluate } from "./evaluate.js";
 import { generate } from "./generate.js";
 import { commitWork } from "./git.js";
 import { type Timings, emit } from "./events.js";
@@ -236,9 +236,17 @@ function repairPrompt(feedback: Feedback, artifacts: string): string {
     .join("\n");
 }
 
-/** Evidence is a file the evaluator saved, or a URL it read. Only the first needs a path. */
+/**
+ * Evidence is a file the evaluator saved, or a URL it read. Only the first
+ * needs a path, and it is reduced by the same function that validated it — so
+ * a citation cannot pass the check in one spelling and be built into a path in
+ * another, which is how `evidence/evidence/shot.png` happened.
+ */
 function located(evidence: string, artifacts: string): string {
-  return /^https?:\/\//.test(evidence) ? evidence : join(artifacts, "evidence", evidence);
+  const name = cited(evidence);
+  return name === evidence && /^https?:\/\//.test(evidence)
+    ? evidence
+    : join(artifacts, "evidence", name);
 }
 
 async function writeFeedback(run: Run, attempt: number, feedback: Feedback): Promise<void> {
