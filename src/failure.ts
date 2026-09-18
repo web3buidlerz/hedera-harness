@@ -4,17 +4,12 @@ import type { Verdict } from "./evaluate.js";
 import type { Stage, StageFailure } from "./test.js";
 
 /**
- * One reason an attempt did not pass, as fields rather than as a sentence.
+ * One reason an attempt did not pass, as fields rather than a sentence.
  *
- * This used to be a pre-glued string — `"/status: renders undefined
- * [evidence/a.png]"` — which meant anything reading a run had to pull it back
- * apart with a regex to recover the three fields it was built from a line
- * earlier. It is the event where structure matters most: it is what a report
- * groups by, what CI would gate on, and what the harness itself hashes.
- *
- * The type, its identity and its prose live together deliberately. All three
- * are one decision — what counts as "the same failure again" — and splitting
- * them is how they drift apart.
+ * A pre-glued string forces every reader to regex back out the fields it was
+ * built from, and this is what a report groups by, what CI would gate on and
+ * what the harness hashes. Type, identity and prose live together because all
+ * three answer one question: what counts as the same failure again.
  */
 export type AttemptFailure =
   /** A command the harness ran and that exited non-zero. No agent involved. */

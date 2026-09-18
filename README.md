@@ -82,17 +82,51 @@ Each command is a string, or `{ run, cwd }` when it must run somewhere other tha
 ```
 harness init [name]         set the project up and draft specs/<name>.md
 harness run --spec <path>   build the feature described by a spec
+harness report [run]        read a finished run (default: the latest)
 
   --max-attempts N          repair attempts before giving up (default 3)
   --model NAME              sonnet (default), opus, haiku, or a full model id
   --yes                     skip the first-run command confirmation
   --json                    one JSON object per line, for CI
+  --full                    report: include both agents' tool feeds
 ```
 
 Every stage reports what happened as a typed event; the watchable output above
 and `--json` are two renderers reading the same stream, so neither can drift
 from the other. `--json` carries raw values — `"costUsd": 0.48`, not
 `~$0.48 of tokens` — which is the whole reason the two are separate.
+
+## Reading a finished run
+
+```
+harness report
+```
+
+A run is watched; a finished run is sat with. `report` answers the questions the
+live output cannot: what each attempt did, what it cost in total, and — the one
+that matters — **why you should believe the verdict**.
+
+```
+ATTEMPT 2  failed
+  generate   20.0s  8 turns · 3 tool calls · ~$0.10
+  evaluate   25.0s  verdict: fail — 2 finding(s)
+  ! no verdict — asking the same evaluator to finish
+
+  1 open · 1 fixed · 1 new
+    /status: still shows undefined [c.png]  (still open)
+    test: `yarn test` exited 1
+
+  evidence  attempt-2/evidence/  16 files, 3 screenshots
+```
+
+`1 open` is the number to read: a failure that survived an attempt is marked
+`(still open)`, which separates an agent converging from one trading one bug for
+another. The warning line is there because the live output slides past it — on
+the first real run the evaluator ended a turn without answering and was asked
+again, and a summary reading `PASSED after 1 attempt` never mentioned it.
+
+`--full` adds both agents' tool feeds, so you can read exactly what the
+evaluator checked rather than taking its word.
 
 ## What a run leaves behind
 

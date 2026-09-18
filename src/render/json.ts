@@ -6,19 +6,12 @@ import { type HarnessEvent, subscribe } from "../events.js";
 export const EVENTS_FILE = "events.jsonl";
 
 /**
- * One JSON object per line — the whole of a run, losslessly.
+ * One JSON object per line — a whole run, losslessly. Rendering it back into
+ * prose is `harness report`'s job, which is why no renderer writes that twice.
  *
- * This replaced a hand-written `harness.log` renderer that formatted each event
- * into a sentence. That was a hundred lines of switch mirroring the terminal
- * renderer's switch, and it dropped the high-frequency events, so the file was
- * both duplicated effort and an incomplete record. A run is easier to read
- * afterwards from a complete machine-readable stream than from a prose summary
- * somebody has to keep in step by hand — and rendering it back into prose is
- * exactly the job `harness report` exists to do.
- *
- * It is this short only because events carry data. If a stage ever puts a
- * formatted sentence in an event, this quietly becomes a way to read the
- * terminal output with extra steps.
+ * It is this short only because events carry data. A stage that puts a
+ * formatted sentence in an event turns this into the terminal output with
+ * extra steps.
  */
 function render(write: (line: string) => void): () => void {
   return subscribe((event: HarnessEvent) => {

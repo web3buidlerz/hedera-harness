@@ -51,13 +51,11 @@ export interface Ending {
 /**
  * Reads a `result` message, or null for anything else.
  *
- * Both numbers were being got wrong. Turns were counted here as assistant
- * messages, which reported 84 for a conversation the SDK measured at 41 and
- * capped at 300 — so the figure on screen bore no fixed relation to the bound
- * it was supposed to inform. And one conversation can end more than once: a
- * background subagent finishing wakes it with a `task-notification` for a few
- * more turns, arriving as a second result. Turns accumulate across those;
- * `total_cost_usd` is already cumulative, so it must not.
+ * Two traps. Turns must be the SDK's count rather than a tally of assistant
+ * messages, because that is what `maxTurns` is enforced against. And one
+ * conversation can end twice — a background subagent finishing wakes it with a
+ * `task-notification` — so turns accumulate across endings, while
+ * `total_cost_usd` is already cumulative and must not.
  */
 export function endingOf(message: unknown, maxTurns: number): Ending | null {
   const candidate = message as {
