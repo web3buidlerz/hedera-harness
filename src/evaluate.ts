@@ -318,7 +318,13 @@ function verdictServer(captured: Captured): ReturnType<typeof createSdkMcpServer
             evidence: failure.evidence.map(cited),
           }));
           captured.verdict = { pass: args.pass, failures };
-          return { content: [{ type: "text", text: "Verdict recorded." }] };
+          // Answering ends the turn. Without this the evaluator decides for
+          // itself when it is finished, and the one time it got that wrong it
+          // ended without answering at all.
+          return {
+            content: [{ type: "text", text: "Verdict recorded." }],
+            _meta: { "claude/endTurn": true },
+          };
         },
       ),
     ],

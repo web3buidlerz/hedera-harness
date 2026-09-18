@@ -43,6 +43,13 @@ interface Feedback {
   detail?: string;
 }
 
+/** One attempt's outcome, as recorded in `result.json`. */
+export interface Attempt {
+  attempt: number;
+  passed: boolean;
+  failures: AttemptFailure[];
+}
+
 export class AbortRun extends Error {
   constructor(message: string) {
     super(message);
@@ -64,7 +71,9 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
   let prompt = options.spec;
   let session: string | undefined;
   let previous: Set<string> = new Set();
-  const history: Array<{ attempt: number; feedback: Feedback }> = [];
+  // Kept for `result.json`: which failures each attempt produced, so a finished
+  // run says whether the agent converged rather than only how many tries it had.
+  const history: Attempt[] = [];
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const generated = await generate({ repoRoot, run, prompt, attempt, resume: session, model: options.model });
@@ -73,12 +82,12 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     if (skills.length === 0) skills = generated.skills;
 
     const feedback = await assess(options, attempt, timings);
-    history.push({ attempt, feedback });
+    history.push({ attempt, passed: feedback.ok, failures: feedback.failures });
     await writeFeedback(run, attempt, feedback);
 
     if (feedback.ok) {
       report(attempt, feedback, previous);
-      await writeResult(run, { passed: true, attempts: attempt, branch: options.branch, timings, skills });
+      await writeResult(run, { passed: true, attempts: attempt, branch: options.branch, timings, skills, history });
       return { passed: true, attempts: attempt, branch: options.branch, timings };
     }
 
@@ -101,7 +110,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     prompt = repairPrompt(feedback);
   }
 
-  await writeResult(run, { passed: false, attempts: history.length, branch: options.branch, timings, skills });
+  await writeResult(run, { passed: false, attempts: history.length, branch: options.branch, timings, skills, history });
   return { passed: false, attempts: history.length, branch: options.branch, timings };
 }
 
@@ -208,7 +217,14 @@ async function writeFeedback(run: Run, attempt: number, feedback: Feedback): Pro
 
 async function writeResult(
   run: Run,
-  result: { passed: boolean; attempts: number; branch: string; timings: Timings; skills: string[] },
+  result: {
+    passed: boolean;
+    attempts: number;
+    branch: string;
+    timings: Timings;
+    skills: string[];
+    history: Attempt[];
+  },
 ): Promise<void> {
   await run.writeResult(result);
 }
