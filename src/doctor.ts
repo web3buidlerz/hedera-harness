@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { type Command, runCommand } from "./commands.js";
@@ -57,6 +58,7 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
   emit({ type: "check", name: "tree clean", ok: true });
 
   await checkSkills(repoRoot);
+  await checkBrowser();
 
   const existing = await readConfig(repoRoot);
   const proposal = existing === null ? await resolve(options) : null;
@@ -106,6 +108,38 @@ async function checkSkills(repoRoot: string): Promise<void> {
     ok: false,
     remedy: "add them with: claude plugin marketplace add hedera-dev/hedera-skills",
   });
+}
+
+/**
+ * EVALUATE drives a real browser, and a missing one surfaces halfway through
+ * judging — after generation has been paid for, which is the forty minutes
+ * DOCTOR exists to save.
+ *
+ * Only the certain case is reported: an empty cache means EVALUATE cannot
+ * work. Which build `playwright-cli` picks is its own business, and guessing
+ * at that would produce a false alarm on a machine where it runs fine.
+ */
+async function checkBrowser(): Promise<void> {
+  const entries = await readdir(browserCache()).catch(() => [] as string[]);
+  if (entries.some((entry) => entry.startsWith("chromium"))) {
+    emit({ type: "check", name: "browser for the evaluator", ok: true });
+    return;
+  }
+  emit({
+    type: "check",
+    name: "no browser installed — EVALUATE drives one and will fail without it",
+    ok: false,
+    remedy: "install it with: npx playwright install chromium",
+  });
+}
+
+/** Playwright's documented cache locations, and the variable that overrides them. */
+function browserCache(): string {
+  const override = process.env["PLAYWRIGHT_BROWSERS_PATH"];
+  if (override !== undefined) return override;
+  if (process.platform === "darwin") return join(homedir(), "Library", "Caches", "ms-playwright");
+  if (process.platform === "win32") return join(homedir(), "AppData", "Local", "ms-playwright");
+  return join(homedir(), ".cache", "ms-playwright");
 }
 
 async function checkTooling(repoRoot: string): Promise<void> {
