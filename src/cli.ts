@@ -58,14 +58,11 @@ let interrupting = false;
 const NO_TIMINGS: Timings = { generateMs: 0, testMs: 0, evaluateMs: 0 };
 
 /**
- * Ctrl-C used to tear the process down without unwinding the `finally` blocks
- * that stop the dev server and return you to your branch — leaving a server
- * holding the port and a dirty tree on a harness branch, which is exactly the
- * state that makes the next run refuse to start.
- *
- * The attempt is committed rather than discarded, for the same reason every
- * other attempt is: a clean tree is what lets you run again, and the work is
- * on a throwaway branch you can delete.
+ * Without this, Ctrl-C skips the `finally` blocks that stop the dev server and
+ * restore your branch, leaving a held port and a dirty tree on a harness
+ * branch — the exact state that makes the next run refuse to start. The
+ * attempt is committed rather than discarded, because a clean tree is what
+ * lets you run again.
  */
 async function cancel(): Promise<never> {
   killTrackedChildren();

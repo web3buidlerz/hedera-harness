@@ -3,14 +3,10 @@ import type { Timings } from "./events.js";
 /**
  * Terminal styling, in the smallest form that does the job.
  *
- * A run is watched for tens of minutes, so the eye needs somewhere to land:
- * which checks passed, where a stage began, how it ended. Colour here carries
- * meaning — green passed, red failed, dim is context you skim past. If colour
- * ever makes a failure harder to spot it has gone too far.
- *
- * Deliberately plain ANSI: no dependency, no alternate screen, no repainting.
- * Piped output is byte-identical minus the escape codes, so `harness run | tee`
- * and the scrollback say the same thing.
+ * Colour carries meaning, never decoration: green passed, red failed, dim is
+ * context you skim past. If colour ever makes a failure harder to spot it has
+ * gone too far. Plain ANSI — no dependency, no alternate screen, no repainting
+ * — so piped output is byte-identical minus the escape codes.
  */
 const COLOUR = process.stdout.isTTY === true && process.env["NO_COLOR"] === undefined;
 
