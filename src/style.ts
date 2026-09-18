@@ -44,6 +44,19 @@ export function row(stage: string, detail: string): string {
   return `  ${stage.padEnd(7)} ${dim(detail)}`;
 }
 
+/**
+ * `verdict: fail — 2 finding(s)` — the evaluator's answer.
+ *
+ * Shared rather than written per renderer: it is the one line in a run that
+ * must read identically whether you watched it happen or came back to it
+ * afterwards, and two copies of the wording drift the first time either moves.
+ */
+export function verdict(outcome: "pass" | "fail" | "none", findings: number): string {
+  if (outcome === "none") return yellow("no verdict");
+  if (outcome === "pass") return green("verdict: pass");
+  return red(`verdict: fail — ${findings} finding(s)`);
+}
+
 /** `GENERATE  attempt 1 · sonnet · 40 skills` — anchors a long scrollback. */
 export function heading(label: string, detail = ""): string {
   return `\n${bold(label.toUpperCase())}${detail === "" ? "" : `  ${dim(detail)}`}`;

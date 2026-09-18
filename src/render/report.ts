@@ -13,6 +13,7 @@ import {
   frame,
   green,
   red,
+  verdict,
   yellow,
 } from "../style.js";
 
@@ -241,10 +242,7 @@ function next(dir: string, finished: Extract<HarnessEvent, { type: "run:finished
 }
 
 function verdictOf(event: Extract<HarnessEvent, { type: "evaluate:finished" }> | undefined): string {
-  if (event === undefined) return dim("—");
-  if (event.verdict === "none") return yellow("no verdict");
-  if (event.verdict === "pass") return green("verdict: pass");
-  return red(`verdict: fail — ${event.findings} finding(s)`);
+  return event === undefined ? dim("—") : verdict(event.verdict, event.findings);
 }
 
 /** Failure ids from every earlier attempt, so a repeat can be marked as one. */
