@@ -87,10 +87,10 @@ export async function commit(paths: string[], message: string, cwd: string): Pro
  * working tree when the run switched back, losing the file the user wrote.
  *
  * A dotenv file must never enter git history, whatever the working tree holds.
- * The generator's hook refuses the obvious writes, but a command string cannot
- * be pattern-matched against an interpreter — an agent asked for a `.env` got
- * one through `python3 -c "open('.env','w')"`. This is the half that is
- * actually enforceable, because the harness owns staging.
+ * The generator's hook refuses the obvious writes, but no pattern beats an
+ * interpreter — an agent refused three times wrote one with
+ * `python3 -c "open('.env','w')"`. This half is enforceable: the harness owns
+ * staging.
  */
 const SECRET_FILE = /(^|\/)\.env(?!\.(example|sample|template|dist|defaults)$)(\.[^/]*)?$/;
 

@@ -1,16 +1,10 @@
 /**
  * Everything a run has to say, as data.
  *
- * Stages used to format their own output and write it straight to stdout,
- * which meant the only way to know what a run did was to read the terminal —
- * no second renderer, no machine-readable mode, and no way to test the loop
- * without standing up agents to make it print something.
- *
- * The rule that makes this worth the indirection: **events carry data, never
- * formatted strings.** A stage reports that generation finished with 43 turns
- * and 30 tool calls; deciding that this reads as `done — 43 turns, 30 tool
- * calls` is the renderer's job. The moment an event carries a sentence, the
- * JSON renderer is reduced to quoting the terminal one.
+ * One rule earns the indirection: **events carry data, never formatted
+ * strings.** A stage reports 43 turns and 30 tool calls; that this reads as
+ * `done — 43 turns` is the renderer's job. An event carrying a sentence
+ * reduces the JSON renderer to quoting the terminal one.
  */
 import type { Command } from "./commands.js";
 import type { AttemptFailure } from "./failure.js";

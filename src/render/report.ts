@@ -40,17 +40,11 @@ export interface ReportOptions {
 /**
  * Reads a finished run back.
  *
- * A run is watched; a finished run is sat with. The job here is narrower than
- * "show the run again": it is to make the adjudication **checkable**. The
- * harness's whole claim is that it does not take the agent's word for anything
- * — but on the first real run, establishing that the verdict was honest meant
- * hand-running four `jq` commands and opening evidence files. A guarantee that
- * costs that much to verify is one most people will take on trust, which is the
- * thing it exists to avoid.
- *
- * So the emphasis is on what the evaluator did and what it saved, and on
- * anomalies the live output passes over — that same run needed two evaluation
- * passes, because the first ended without a verdict, and nothing said so.
+ * Not to replay it, but to make its adjudication checkable: verifying the
+ * first real verdict by hand took four `jq` commands, and a guarantee that
+ * expensive to check is one people stop checking. Hence the weight on what the
+ * evaluator did, what it saved, and what the live output passed over — that
+ * run needed two evaluation passes and the summary never said so.
  */
 export async function report(options: ReportOptions): Promise<void> {
   const dir = await locate(options);
