@@ -15,6 +15,7 @@ import {
   red,
   row,
   tick,
+  verdict,
   warn,
   yellow,
 } from "../style.js";
@@ -104,15 +105,7 @@ export function renderToTerminal(): () => void {
 
       case "evaluate:finished":
         // The verdict is the one thing in a stage that should not be toned down.
-        console.log(
-          `  ${dim(elapsed())}  ${
-            event.verdict === "none"
-              ? yellow("no verdict")
-              : event.verdict === "pass"
-                ? green("verdict: pass")
-                : red(`verdict: fail — ${event.findings} finding(s)`)
-          }`,
-        );
+        console.log(`  ${dim(elapsed())}  ${verdict(event.verdict, event.findings)}`);
         return;
 
       case "committed":
