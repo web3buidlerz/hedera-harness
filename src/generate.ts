@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Progress, describeMessage, formatTokenCost } from "./progress.js";
+import { dim } from "./style.js";
 import type { Run } from "./run.js";
 
 /** See PLAN-V2 § Bounds. Starting points, to be tuned once there are real runs. */
@@ -60,8 +61,10 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   const transcript = await run.path(`attempt-${attempt}`, "generate.jsonl");
   const plugins = await discoverPlugins();
 
-  const progress = new Progress(`generate attempt ${attempt}`);
-  await run.log(`generate attempt ${attempt}`);
+  const progress = new Progress("generate");
+  // Log only: the terminal gets the stage heading from `progress.open` below,
+  // once the init message says what the agent could actually reach.
+  await run.log(`generate attempt ${attempt}`, null);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WALL_CLOCK_MS);
@@ -113,7 +116,7 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
         skills = ((message as { skills?: unknown }).skills ?? []) as string[];
         announced = true;
         const resumed = options.resume === undefined ? "" : " · resumed";
-        progress.open(`${options.model}${resumed} · ${skills.length} skills`);
+        progress.open(`attempt ${attempt} · ${options.model}${resumed} · ${skills.length} skills`);
       }
 
       const step = describeMessage(message, repoRoot);
@@ -136,8 +139,8 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   }
 
   const summary = `done — ${turns} turns, ${progress.toolCalls} tool calls${formatTokenCost(costUsd)}`;
-  const durationMs = progress.close(summary);
-  await run.log(`generate attempt ${attempt} ${summary}`);
+  const durationMs = progress.close(dim(summary));
+  await run.log(`generate attempt ${attempt} ${summary}`, null);
   return { sessionId, skills, turns, costUsd, durationMs };
 }
 
