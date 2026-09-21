@@ -115,3 +115,21 @@ export function clip(text: string): string {
 
 /** Width to clip a tool's argument to, so one call is always one line. */
 const ARGUMENT_WIDTH = 96;
+
+/**
+ * The wordmark, printed once before a run starts.
+ *
+ * Dim rather than coloured, on the same rule as everything else here: colour
+ * means something in this output, and a banner means nothing — it is the one
+ * thing on screen a reader should be able to skip entirely. It prints when
+ * piped too, because "piped output is the terminal's minus the escape codes"
+ * is an invariant worth more than saving six lines in a log file.
+ */
+export function banner(): string {
+  const rows = [
+    "█ █ █▀▀ █▀▄ █▀▀ █▀▄ ▄▀█   █ █ ▄▀█ █▀▄ █▄ █ █▀▀ █▀▀ █▀▀",
+    "█▀█ █▀▀ █ █ █▀▀ █▀▄ █▀█   █▀█ █▀█ █▀▄ █ ▀█ █▀▀ ▀▀█ ▀▀█",
+    "▀ ▀ ▀▀▀ ▀▀  ▀▀▀ ▀ ▀ ▀ ▀   ▀ ▀ ▀ ▀ ▀ ▀ ▀  ▀ ▀▀▀ ▀▀▀ ▀▀▀",
+  ];
+  return `\n${rows.map((row) => dim(row)).join("\n")}`;
+}
