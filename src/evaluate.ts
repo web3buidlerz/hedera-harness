@@ -194,7 +194,7 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
   // has contradicted itself, which is the strongest reason there is to reject.
   // An unreadable check is a warning — the mechanical layer must never
   // manufacture failures out of its own bugs.
-  const settled = await settleAll(chain.mirrorNode, captured.checks);
+  const settled = await settleAll(chain.mirrorNode, captured.checks, attempt);
   await writeFile(
     await run.path(`attempt-${attempt}`, "checks.json"),
     `${JSON.stringify(settled, null, 2)}\n`,
