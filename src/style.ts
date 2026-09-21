@@ -35,8 +35,8 @@ export function warn(text: string): string {
 /**
  * `  build   yarn next:build` — one command in a stage, with the heartbeat
  * rows it emits indented underneath, so a stage and its output read as one
- * block. The `baseline`/`attempt-N` prefix stays in `harness.log` and off the
- * terminal, where the heading above already says which is running.
+ * block. The heading above already says which attempt is running, so the row
+ * carries only the command.
  */
 export function row(stage: string, detail: string): string {
   return `  ${stage.padEnd(7)} ${dim(detail)}`;

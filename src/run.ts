@@ -53,21 +53,6 @@ export class Run {
     return new Run(dir, stamp);
   }
 
-  /**
-   * Appends one timestamped line to `harness.log` and echoes it to stdout.
-   *
-   * `display` is what the terminal sees when it should differ — colour, a tick
-   * instead of the word "check", or `null` for a line the log wants and the
-   * terminal has already been told by something better. The log file only ever
-   * gets `message`, so a transcript read later is plain text rather than a
-   * field of escape codes.
-   */
-  async log(message: string, display: string | null = message): Promise<void> {
-    const line = `${new Date().toISOString()} ${message}`;
-    await appendFile(join(this.dir, "harness.log"), `${line}\n`);
-    if (display !== null) console.log(display);
-  }
-
   /** Path inside this run's directory, creating parent directories as needed. */
   async path(...segments: string[]): Promise<string> {
     const target = join(this.dir, ...segments);
