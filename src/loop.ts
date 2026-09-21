@@ -1,6 +1,7 @@
+import { join, relative } from "node:path";
 import { writeFile } from "node:fs/promises";
 import type { HarnessConfig } from "./config.js";
-import { type Outcome, evaluate } from "./evaluate.js";
+import { type Outcome, cited, evaluate } from "./evaluate.js";
 import { generate } from "./generate.js";
 import { commitWork } from "./git.js";
 import { type Timings, emit } from "./events.js";
@@ -23,6 +24,18 @@ export interface LoopOptions {
   model: string;
   /** Repo-relative spec path, when it lives in the repo. Never committed as work. */
   specInRepo?: string | undefined;
+  /**
+   * The two calls that need an agent. Injectable because the decisions this
+   * loop makes across attempts — what repeated, when to abandon the session,
+   * when to stop — cannot otherwise be exercised without paying for a model to
+   * fail on cue. Everything else in an attempt runs for real.
+   */
+  agents?: Agents;
+}
+
+export interface Agents {
+  generate: typeof generate;
+  evaluate: typeof evaluate;
 }
 
 export interface LoopResult {
@@ -43,6 +56,13 @@ interface Feedback {
   detail?: string;
 }
 
+/** One attempt's outcome, as recorded in `result.json`. */
+export interface Attempt {
+  attempt: number;
+  passed: boolean;
+  failures: AttemptFailure[];
+}
+
 export class AbortRun extends Error {
   constructor(message: string) {
     super(message);
@@ -56,6 +76,7 @@ export class AbortRun extends Error {
  */
 export async function runLoop(options: LoopOptions): Promise<LoopResult> {
   const { repoRoot, run, maxAttempts } = options;
+  const build = options.agents?.generate ?? generate;
 
   const timings: Timings = { generateMs: 0, testMs: 0, evaluateMs: 0 };
   // Recorded once: what the agent could reach. A run that behaves differently
@@ -64,21 +85,23 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
   let prompt = options.spec;
   let session: string | undefined;
   let previous: Set<string> = new Set();
-  const history: Array<{ attempt: number; feedback: Feedback }> = [];
+  // Kept for `result.json`: which failures each attempt produced, so a finished
+  // run says whether the agent converged rather than only how many tries it had.
+  const history: Attempt[] = [];
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const generated = await generate({ repoRoot, run, prompt, attempt, resume: session, model: options.model });
+    const generated = await build({ repoRoot, run, prompt, attempt, resume: session, model: options.model });
     session = generated.sessionId;
     timings.generateMs += generated.durationMs;
     if (skills.length === 0) skills = generated.skills;
 
     const feedback = await assess(options, attempt, timings);
-    history.push({ attempt, feedback });
+    history.push({ attempt, passed: feedback.ok, failures: feedback.failures });
     await writeFeedback(run, attempt, feedback);
 
     if (feedback.ok) {
       report(attempt, feedback, previous);
-      await writeResult(run, { passed: true, attempts: attempt, branch: options.branch, timings, skills });
+      await writeResult(run, { passed: true, attempts: attempt, branch: options.branch, timings, skills, history });
       return { passed: true, attempts: attempt, branch: options.branch, timings };
     }
 
@@ -98,10 +121,10 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
     }
 
     previous = new Set(feedback.failures.map((failure) => failure.id));
-    prompt = repairPrompt(feedback);
+    prompt = repairPrompt(feedback, join(relative(repoRoot, run.dir), `attempt-${attempt}`));
   }
 
-  await writeResult(run, { passed: false, attempts: history.length, branch: options.branch, timings, skills });
+  await writeResult(run, { passed: false, attempts: history.length, branch: options.branch, timings, skills, history });
   return { passed: false, attempts: history.length, branch: options.branch, timings };
 }
 
@@ -132,11 +155,12 @@ async function assess(options: LoopOptions, attempt: number, timings: Timings): 
 
   if (failure !== null) return stageFeedback(failure);
 
+  const judge = options.agents?.evaluate ?? evaluate;
   const server = await startServer(config.serve, repoRoot);
   const evaluateStarted = Date.now();
   try {
     return verdictFeedback(
-      await evaluate({ repoRoot, run, specPath: options.specPath, attempt, appUrl: server.url, model: options.model }),
+      await judge({ repoRoot, run, specPath: options.specPath, attempt, appUrl: server.url, model: options.model }),
     );
   } finally {
     timings.evaluateMs += Date.now() - evaluateStarted;
@@ -184,11 +208,25 @@ function report(attempt: number, feedback: Feedback, previous: Set<string>): boo
   return open.length > 0;
 }
 
-function repairPrompt(feedback: Feedback): string {
+/**
+ * What the agent is told went wrong.
+ *
+ * A stage failure carries the command's own output, so it explains itself. A
+ * verdict failure is one sentence from someone who watched the app in a browser
+ * — so it gets the evidence too, by a path the agent can actually open. The
+ * evaluator saves screenshots, page snapshots and saved responses, all of them
+ * readable, and citing them by bare filename made them unfindable.
+ */
+function repairPrompt(feedback: Feedback, artifacts: string): string {
   return [
     "That attempt did not pass. What went wrong:",
     "",
-    ...feedback.failures.map((failure) => `- ${describeFailure(failure)}`),
+    ...feedback.failures.flatMap((failure) => [
+      `- ${describeFailure(failure)}`,
+      ...(failure.kind === "verdict"
+        ? failure.evidence.map((item) => `  ${located(item, artifacts)}`)
+        : [`  full output: ${join(artifacts, `${failure.stage}.txt`)}`]),
+    ]),
     feedback.detail === undefined ? "" : `\n${feedback.detail}`,
     "",
     "Fix it, then stop. Do not start the dev server or run the checks yourself —",
@@ -196,6 +234,19 @@ function repairPrompt(feedback: Feedback): string {
   ]
     .filter((line) => line !== "")
     .join("\n");
+}
+
+/**
+ * Evidence is a file the evaluator saved, or a URL it read. Only the first
+ * needs a path, and it is reduced by the same function that validated it — so
+ * a citation cannot pass the check in one spelling and be built into a path in
+ * another, which is how `evidence/evidence/shot.png` happened.
+ */
+function located(evidence: string, artifacts: string): string {
+  const name = cited(evidence);
+  return name === evidence && /^https?:\/\//.test(evidence)
+    ? evidence
+    : join(artifacts, "evidence", name);
 }
 
 async function writeFeedback(run: Run, attempt: number, feedback: Feedback): Promise<void> {
@@ -208,7 +259,14 @@ async function writeFeedback(run: Run, attempt: number, feedback: Feedback): Pro
 
 async function writeResult(
   run: Run,
-  result: { passed: boolean; attempts: number; branch: string; timings: Timings; skills: string[] },
+  result: {
+    passed: boolean;
+    attempts: number;
+    branch: string;
+    timings: Timings;
+    skills: string[];
+    history: Attempt[];
+  },
 ): Promise<void> {
   await run.writeResult(result);
 }
