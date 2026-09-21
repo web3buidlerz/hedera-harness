@@ -1,12 +1,24 @@
 import { relative } from "node:path";
 import { describe } from "../commands.js";
 import { CONFIG_FILE } from "../config.js";
-import { type HarnessEvent, type Timings, subscribe } from "../events.js";
+import { type HarnessEvent, subscribe } from "../events.js";
 import { describeFailure } from "../failure.js";
-import { bold, dim, frame, green, heading, red, row, tick, warn, yellow } from "../style.js";
-
-/** Width to clip a tool's argument to, so one call is always one line. */
-const ARGUMENT_WIDTH = 96;
+import {
+  bold,
+  clip,
+  describeTimings,
+  dim,
+  formatClock,
+  frame,
+  green,
+  heading,
+  red,
+  row,
+  tick,
+  verdict,
+  warn,
+  yellow,
+} from "../style.js";
 
 /**
  * The renderer a person watches.
@@ -93,15 +105,7 @@ export function renderToTerminal(): () => void {
 
       case "evaluate:finished":
         // The verdict is the one thing in a stage that should not be toned down.
-        console.log(
-          `  ${dim(elapsed())}  ${
-            event.verdict === "none"
-              ? yellow("no verdict")
-              : event.verdict === "pass"
-                ? green("verdict: pass")
-                : red(`verdict: fail — ${event.findings} finding(s)`)
-          }`,
-        );
+        console.log(`  ${dim(elapsed())}  ${verdict(event.verdict, event.findings)}`);
         return;
 
       case "committed":
@@ -187,31 +191,7 @@ export function renderToTerminal(): () => void {
   });
 }
 
-/** `generate 7:46 · test 0:52 · evaluate 3:28` */
-function describeTimings(timings: Timings): string {
-  return [
-    `generate ${formatDuration(timings.generateMs)}`,
-    `test ${formatDuration(timings.testMs)}`,
-    `evaluate ${formatDuration(timings.evaluateMs)}`,
-  ].join(" · ");
-}
 
-/** `  0:04` — a running clock, right-aligned so rows line up. */
-function formatClock(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`.padStart(5);
-}
-
-/**
- * `7:46` for anything over a minute, `0.3s` below it. A stage that really took
- * 278ms rounded to `0:00` in the summary, which reads as "did not run" rather
- * than "was instant".
- */
-function formatDuration(ms: number): string {
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const seconds = Math.round(ms / 1000);
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
 
 /**
  * Absolute paths are most of a line and none of the information — the agent
@@ -222,8 +202,3 @@ function relativise(text: string, root: string): string {
   return text.startsWith(root) ? relative(root, text) || text : text.split(`${root}/`).join("");
 }
 
-/** Single line, ellipsis rather than wrapping — the transcript has the full text. */
-function clip(text: string): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length <= ARGUMENT_WIDTH ? flat : `${flat.slice(0, ARGUMENT_WIDTH - 1)}…`;
-}

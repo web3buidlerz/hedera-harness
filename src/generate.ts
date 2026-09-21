@@ -14,12 +14,11 @@ const MAX_BUDGET_USD = 10;
 /**
  * Extra skill plugins to load, for a project that does not ship its own.
  *
- * Unset by default and deliberately so. A scaffolded project carries its
- * skills in `.claude/skills/`, which `settingSources: ["project"]` already
- * loads — versioned with the repo, identical for every teammate, nothing to
- * install. Pointing at a marketplace checkout instead duplicated fifteen of
- * those twenty-five skills under a second name and added six about authoring
- * plugins and harness recipes, which is not the job the generator is doing.
+ * Unset by default. A scaffolded project carries its skills in
+ * `.claude/skills/`, which `settingSources: ["project"]` already loads —
+ * versioned with the repo, nothing to install. A marketplace checkout instead
+ * duplicated most of them under a second name and added six about authoring
+ * plugins, which is not the job the generator is doing.
  */
 const SKILLS_DIR = process.env["HEDERA_SKILLS_DIR"];
 

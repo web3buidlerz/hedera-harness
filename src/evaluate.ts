@@ -142,15 +142,11 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
   });
 
   if (outcome.type === "no-verdict") {
-    // Resumed, not restarted. A fresh evaluator would re-open the browser,
-    // re-read the chain and re-run every wait from zero — on the one real run
-    // where this fired, the restart repeated all 28 tool calls and doubled the
-    // cost of the evaluation. Continuing the session keeps the evidence it
-    // already gathered and only asks for the answer.
-    //
-    // It does not weaken the rule that a verdict is never re-rolled: that rule
-    // stops an evaluator diffing against its own previous verdict, and in a
-    // no-verdict case there is no previous verdict to diff against.
+    // Resumed, not restarted: a fresh evaluator re-opens the browser, re-reads
+    // the chain and re-runs every wait, which on the one real occurrence
+    // repeated 28 tool calls. It does not weaken "a verdict is never
+    // re-rolled" — that rule stops an evaluator diffing against its own
+    // previous verdict, and here there is none.
     emit({
       type: "note",
       level: "warn",
