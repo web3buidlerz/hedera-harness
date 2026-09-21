@@ -38,12 +38,19 @@ export type HarnessEvent =
   /** One of DOCTOR's preconditions. `ok: false` is a warning, not a failure — a failure throws. */
   | { type: "check"; name: string; ok: boolean; remedy?: string }
   | { type: "phase:started"; phase: Phase; attempt?: number | undefined; detail?: string | undefined }
-  | { type: "command:started"; name: string; command: Command }
-  | { type: "command:skipped"; name: string; reason: string }
+  /**
+   * `attempt` is absent for DOCTOR's baseline and present for every attempt
+   * after it. Carried rather than inferred from position: the same code path
+   * serves both, so a reader that works it out from the preceding
+   * `phase:started` is correct only until an event is emitted between phases,
+   * and then silently wrong.
+   */
+  | { type: "command:started"; name: string; command: Command; attempt?: number | undefined }
+  | { type: "command:skipped"; name: string; reason: string; attempt?: number | undefined }
   /** Heartbeat from a long command: how long it has run, and its own last line. */
-  | { type: "command:tick"; elapsedMs: number; line: string }
-  /** One tool call by the generating or judging agent. */
-  | { type: "tool"; tool: string; argument: string }
+  | { type: "command:tick"; elapsedMs: number; line: string; attempt?: number | undefined }
+  /** One tool call, by the agent working in `phase` on `attempt`. */
+  | { type: "tool"; tool: string; argument: string; phase: Phase; attempt: number }
   | {
       type: "generate:finished";
       attempt: number;
@@ -81,7 +88,7 @@ export type HarnessEvent =
       commands: Array<{ name: string; command: Command | null; note?: string | undefined }>;
     }
   /** Anything worth saying that is not one of the above. `warn` is for the unexpected-but-survivable. */
-  | { type: "note"; level: "info" | "warn"; text: string }
+  | { type: "note"; level: "info" | "warn"; text: string; attempt?: number | undefined }
   | {
       type: "run:finished";
       passed: boolean;

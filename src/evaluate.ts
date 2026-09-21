@@ -151,6 +151,7 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
       type: "note",
       level: "warn",
       text: `no verdict (${outcome.reason}) — asking the same evaluator to finish`,
+      attempt,
     });
     // The one retry that starts from an existing verdict. The app has not
     // changed between passes — same commit, same server — so the only correct
@@ -254,7 +255,9 @@ async function pass(
     for await (const message of conversation) {
       await appendFile(transcript, `${JSON.stringify(message)}\n`);
       const step = describeMessage(message);
-      if (step !== null) emit({ type: "tool", tool: step.tool, argument: step.argument });
+      if (step !== null) {
+        emit({ type: "tool", tool: step.tool, argument: step.argument, phase: "evaluate", attempt });
+      }
       sessionId ??= message.session_id;
       // A bound the SDK enforces itself arrives as an error result and *then*
       // throws when the iterator is pulled again. Reading it here is what turns

@@ -72,6 +72,19 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   let announced = false;
   let stopped: string | null = null;
 
+  /**
+   * Generation is bounded to protect the run, not to shape an attempt: a breach
+   * is the harness's problem and must never be charged to the agent as a failed
+   * attempt, so it aborts rather than becoming a repair. Reached whether the
+   * stream ended or threw, since a bound does both.
+   */
+  const finish = (): GenerateResult => {
+    if (stopped !== null) throw new GenerateError(`the agent stopped because ${stopped}`);
+    const durationMs = Date.now() - startedAt;
+    emit({ type: "generate:finished", attempt, turns, toolCalls, costUsd, durationMs });
+    return { sessionId, skills, turns, costUsd, durationMs };
+  };
+
   try {
     const conversation = query({
       prompt: options.prompt,
@@ -126,7 +139,7 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
       const step = describeMessage(message);
       if (step !== null) {
         toolCalls += 1;
-        emit({ type: "tool", tool: step.tool, argument: step.argument });
+        emit({ type: "tool", tool: step.tool, argument: step.argument, phase: "generate", attempt });
       }
       sessionId ??= message.session_id;
       const ending = endingOf(message, MAX_TURNS);
@@ -138,10 +151,9 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
     }
   } catch (error) {
     // A bound the SDK enforces itself arrives as an error result and only then
-    // throws, so by here we already know why. Without this the run died with
-    // the SDK's own words — "Claude Code returned an error result: Reached
-    // maximum number of turns (300)" — which names no stage and no remedy.
-    if (stopped !== null) throw new GenerateError(`the agent stopped because ${stopped}`);
+    // throws. The result already told us why, so the throw carries nothing new
+    // and is dropped here; the check after the loop raises it either way.
+    if (stopped !== null) return finish();
     if (controller.signal.aborted && !(error instanceof GenerateError)) {
       throw new GenerateError(
         `the agent did not finish within ${WALL_CLOCK_MS / 60_000} minutes`,
@@ -152,14 +164,8 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
     clearTimeout(timer);
   }
 
-  // Generation is bounded to protect the run, not to shape an attempt: a
-  // breach is the harness's problem and must never be charged to the agent as
-  // a failed attempt, so it aborts rather than becoming a repair.
-  if (stopped !== null) throw new GenerateError(`the agent stopped because ${stopped}`);
+  return finish();
 
-  const durationMs = Date.now() - startedAt;
-  emit({ type: "generate:finished", attempt, turns, toolCalls, costUsd, durationMs });
-  return { sessionId, skills, turns, costUsd, durationMs };
 }
 
 /** Every immediate subdirectory of an explicitly configured skills directory. */

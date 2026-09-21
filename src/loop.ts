@@ -117,6 +117,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
         type: "note",
         level: "warn",
         text: `attempt ${attempt + 1} starts a fresh session — same failure twice`,
+        attempt,
       });
     }
 
@@ -138,7 +139,7 @@ async function assess(options: LoopOptions, attempt: number, timings: Timings): 
 
   emit({ type: "phase:started", phase: "test", attempt });
   const testStarted = Date.now();
-  const failure = await runStages({ config, repoRoot, run, prefix: `attempt-${attempt}` });
+  const failure = await runStages({ config, repoRoot, run, prefix: `attempt-${attempt}`, attempt });
   timings.testMs += Date.now() - testStarted;
 
   // Every attempt is committed, passing or not. A failing attempt left

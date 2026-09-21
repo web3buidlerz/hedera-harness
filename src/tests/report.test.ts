@@ -31,12 +31,12 @@ const RUN: HarnessEvent[] = [
   { type: "check", name: "tooling", ok: true },
 
   { type: "phase:started", phase: "generate", attempt: 1, detail: "sonnet" },
-  { type: "tool", tool: "Write", argument: "/repo/app/page.tsx" },
+  { type: "tool", tool: "Write", argument: "/repo/app/page.tsx", phase: "generate", attempt: 1 },
   { type: "generate:finished", attempt: 1, turns: 20, toolCalls: 9, costUsd: 0.4, durationMs: 60_000 },
   { type: "phase:started", phase: "test", attempt: 1 },
   { type: "command:started", name: "build", command: { run: "yarn build" } },
   { type: "phase:started", phase: "evaluate", attempt: 1, detail: "blind" },
-  { type: "tool", tool: "Bash", argument: "playwright-cli open http://localhost:3000" },
+  { type: "tool", tool: "Bash", argument: "playwright-cli open http://localhost:3000", phase: "evaluate", attempt: 1 },
   { type: "evaluate:finished", attempt: 1, verdict: "fail", findings: 2, costUsd: 0.2, durationMs: 30_000 },
   {
     type: "attempt:finished",
@@ -54,7 +54,7 @@ const RUN: HarnessEvent[] = [
   { type: "phase:started", phase: "generate", attempt: 2, detail: "sonnet · resumed" },
   { type: "generate:finished", attempt: 2, turns: 8, toolCalls: 3, costUsd: 0.1, durationMs: 20_000 },
   { type: "phase:started", phase: "evaluate", attempt: 2, detail: "blind" },
-  { type: "note", level: "warn", text: "no verdict — asking the same evaluator to finish" },
+  { type: "note", level: "warn", text: "no verdict — asking the same evaluator to finish", attempt: 2 },
   { type: "evaluate:finished", attempt: 2, verdict: "fail", findings: 2, costUsd: 0.15, durationMs: 25_000 },
   {
     type: "attempt:finished",
@@ -80,10 +80,14 @@ const RUN: HarnessEvent[] = [
 ];
 
 async function renderRun(): Promise<string> {
+  return renderStream(RUN);
+}
+
+async function renderStream(stream: HarnessEvent[]): Promise<string> {
   const repo = await mkdtemp(join(tmpdir(), "harness-report-"));
   const dir = join(repo, ".harness", "runs", "2026-09-17T00-00-00-000Z");
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "events.jsonl"), RUN.map((event) => JSON.stringify(event)).join("\n"));
+  await writeFile(join(dir, "events.jsonl"), stream.map((event) => JSON.stringify(event)).join("\n"));
 
   const lines: string[] = [];
   const log = console.log;
@@ -128,4 +132,19 @@ test("both attempts are shown, and the run reads as failed", async () => {
   assert.match(output, /ATTEMPT 2/);
   assert.match(output, /FAILED/);
   assert.match(output, /git switch harness\/2026-09-17T00-00-00-000Z/);
+});
+
+/**
+ * Events carry their own attempt now, so a note that belongs to none of them —
+ * an interrupt, a branch the run could not return to — is no longer swept into
+ * whichever attempt was open. It has to be shown somewhere all the same.
+ */
+test("a warning that belongs to no attempt is still reported", async () => {
+  const stream: HarnessEvent[] = [
+    ...RUN.slice(0, 3),
+    { type: "note", level: "warn", text: "\ninterrupted — cleaning up" },
+    ...RUN.slice(3),
+  ];
+  const output = await renderStream(stream);
+  assert.match(output, /interrupted — cleaning up/);
 });

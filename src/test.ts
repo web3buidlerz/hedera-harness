@@ -31,6 +31,8 @@ export interface StageOptions {
   run: Run;
   /** Artifact subdirectory — `baseline` or `attempt-2`. */
   prefix: string;
+  /** Whose commands these are. Absent for DOCTOR's baseline. */
+  attempt?: number | undefined;
   /** Run `install` even when nothing about the dependencies changed. */
   forceInstall?: boolean;
 }
@@ -56,7 +58,7 @@ export async function runStages(options: StageOptions): Promise<StageFailure | n
 
   for (const [stage, command] of remaining) {
     if (command === null) {
-      emit({ type: "command:skipped", name: stage, reason: "none" });
+      emit({ type: "command:skipped", name: stage, reason: "none", attempt: options.attempt });
       continue;
     }
     const failure = await runStage(stage, command, options);
@@ -75,7 +77,12 @@ async function installIfNeeded(options: StageOptions): Promise<StageFailure | nu
   const recorded = await readFile(join(run.dir, FINGERPRINT_FILE), "utf8").catch(() => null);
 
   if (!options.forceInstall && recorded === current) {
-    emit({ type: "command:skipped", name: "install", reason: "dependencies unchanged" });
+    emit({
+      type: "command:skipped",
+      name: "install",
+      reason: "dependencies unchanged",
+      attempt: options.attempt,
+    });
     return null;
   }
 
@@ -89,11 +96,11 @@ async function installIfNeeded(options: StageOptions): Promise<StageFailure | nu
 async function runStage(
   stage: Stage,
   command: Command,
-  { repoRoot, run, prefix }: StageOptions,
+  { repoRoot, run, prefix, attempt }: StageOptions,
 ): Promise<StageFailure | null> {
-  emit({ type: "command:started", name: stage, command });
+  emit({ type: "command:started", name: stage, command, attempt });
   const result = await runCommand(command, repoRoot, COMMAND_TIMEOUT_MS, (elapsedMs, line) => {
-    emit({ type: "command:tick", elapsedMs, line });
+    emit({ type: "command:tick", elapsedMs, line, attempt });
   });
 
   const artifact = join(prefix, `${stage}.txt`);

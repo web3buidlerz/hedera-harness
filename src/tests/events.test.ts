@@ -82,7 +82,7 @@ const STREAM: HarnessEvent[] = [
   { type: "command:started", name: "build", command: { run: "yarn build" } },
   { type: "command:tick", elapsedMs: 10_000, line: "compiling" },
   { type: "phase:started", phase: "generate", attempt: 1, detail: "sonnet · 40 skills" },
-  { type: "tool", tool: "Read", argument: "/repo/packages/app/page.tsx" },
+  { type: "tool", tool: "Read", argument: "/repo/packages/app/page.tsx", phase: "generate", attempt: 1 },
   { type: "generate:finished", attempt: 1, turns: 9, toolCalls: 4, costUsd: 0.48, durationMs: 1_000 },
   { type: "committed", attempt: 1, sha: "4f2a91bc0d33aa" },
   {
