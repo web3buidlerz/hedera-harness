@@ -134,7 +134,7 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
       if (ending !== null) {
         turns += ending.turns;
         costUsd = ending.costUsd;
-        if (ending.failure !== null) stopped = ending.failure;
+        if (ending.failure !== null) stopped = ending.failure.reason;
       }
     }
   } catch (error) {

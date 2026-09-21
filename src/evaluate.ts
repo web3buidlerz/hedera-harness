@@ -1,7 +1,7 @@
 import { appendFile, cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
@@ -28,6 +28,13 @@ const MAX_BUDGET_USD = 5;
 
 const TOOL = "submit_verdict";
 const HARNESS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+export class EvaluateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EvaluateError";
+  }
+}
 
 export interface Failure {
   what: string;
@@ -149,12 +156,33 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
       level: "warn",
       text: `no verdict (${outcome.reason}) — asking the same evaluator to finish`,
     });
+    // The one retry that starts from an existing verdict. The app has not
+    // changed between passes — same commit, same server — so the only correct
+    // response to a broken citation is to save the file or name one that
+    // exists. A retry that drops a finding instead has re-rolled a verdict,
+    // which is the one thing this stage may never do.
+    const judged = outcome.why === "unevidenced" ? locators(captured.verdict) : null;
+
     captured.malformed = null;
     ({ outcome } = await pass(options, workspace, server, transcript, {
       prompt: nudge(outcome),
       captured,
       resume: sessionId,
     }));
+
+    if (judged !== null && outcome.type === "verdict") {
+      const now = locators(outcome.verdict);
+      if (now !== judged) {
+        outcome = {
+          type: "no-verdict",
+          reason:
+            `the retry changed its findings rather than its citations ` +
+            `(${judged || "none"} became ${now || "none"}). It was asked to fix ` +
+            `how a finding is evidenced, not whether it stands.`,
+          why: "unevidenced",
+        };
+      }
+    }
     if (outcome.type === "no-verdict") {
       outcome = { type: "no-verdict", reason: `${outcome.reason} (asked twice)`, why: outcome.why };
     }
@@ -239,10 +267,18 @@ async function pass(
       const ending = endingOf(message, MAX_TURNS);
       if (ending !== null) {
         costUsd = ending.costUsd;
-        if (ending.failure !== null) turn.captured.malformed = `the evaluator stopped because ${ending.failure}`;
+        if (ending.failure !== null) {
+          const stopped = `the evaluator stopped because ${ending.failure.reason}`;
+          // A bound another turn could satisfy earns the retry the bounds table
+          // always promised. Anything else ends the run rather than quietly
+          // buying a second allowance of whatever was just exhausted.
+          if (!ending.failure.recoverable) throw new EvaluateError(stopped);
+          turn.captured.malformed = stopped;
+        }
       }
     }
   } catch (error) {
+    if (error instanceof EvaluateError) throw error;
     if (controller.signal.aborted) {
       turn.captured.malformed = `the evaluator did not finish within ${WALL_CLOCK_MS / 60_000} minutes`;
     } else if (turn.captured.malformed === null) {
@@ -281,7 +317,11 @@ function verdictServer(captured: Captured): ReturnType<typeof createSdkMcpServer
             .describe("Empty when passing. One entry per requirement that is not met."),
         },
         async (args) => {
-          captured.verdict = { pass: args.pass, failures: args.failures as Failure[] };
+          const failures = (args.failures as Failure[]).map((failure) => ({
+            ...failure,
+            evidence: failure.evidence.map(cited),
+          }));
+          captured.verdict = { pass: args.pass, failures };
           return { content: [{ type: "text", text: "Verdict recorded." }] };
         },
       ),
@@ -297,6 +337,12 @@ function verdictServer(captured: Captured): ReturnType<typeof createSdkMcpServer
  * what it needs would buy a fast verdict at the cost of a thorough one, which
  * is the only thing this stage is for.
  */
+/** What a verdict found, ignoring how it evidenced it. Order-insensitive. */
+export function locators(verdict: Verdict | null): string {
+  if (verdict === null) return "";
+  return verdict.failures.map((failure) => failure.where).sort().join(", ");
+}
+
 /** Exported for tests: the three-way branch decides how thorough the retry is. */
 export function nudge(outcome: { reason: string; why: Unanswered }): string {
   const opening = [
@@ -322,6 +368,9 @@ export function nudge(outcome: { reason: string; why: Unanswered }): string {
       "Your verdict cited evidence the harness cannot find. Save the files you",
       "meant to cite into evidence/, or cite only files that are there, and call",
       `${TOOL} again. A finding nobody can check is not a finding.`,
+      "",
+      "Report the same findings. You are fixing how they are evidenced, not",
+      "whether they stand — the app has not changed since you looked at it.",
     ],
   }[outcome.why];
   return [...opening, ...closing].join("\n");
@@ -364,18 +413,28 @@ function adjudicate(
 }
 
 /**
- * Evidence is a file the evaluator saved, or a URL it read. Both must be
- * checkable. A relative name is tried against the workspace and against
- * `evidence/` — the agent writes `evidence/shot.png` as often as `shot.png`,
- * and rejecting a real file over which prefix it used would be pedantry
- * indistinguishable from the check that matters.
+ * A citation reduced to the name it has inside `evidence/`.
+ *
+ * The evaluator writes `shot.png`, `evidence/shot.png` and absolute paths into
+ * its own workspace, all meaning the same file. Accepting every form and then
+ * building a path from the raw string produced `evidence/evidence/shot.png` in
+ * the repair prompt — an unopenable path, in the one message whose job is to
+ * hand the agent something it can open. Normalising once, here, means the check
+ * and the path it later becomes cannot disagree.
+ */
+export function cited(evidence: string): string {
+  if (/^https?:\/\//.test(evidence)) return evidence;
+  return evidence.replace(/^(?:.*\/)?evidence\//, "").replace(/^\.\//, "");
+}
+
+/**
+ * Evidence is a file under `evidence/`, or a URL. Nothing else: only that
+ * directory is copied into the run, so a file cited from anywhere else passes
+ * the check and then points nowhere.
  */
 function resolves(evidence: string, workspace: string): boolean {
   if (/^https?:\/\//.test(evidence)) return true;
-  if (isAbsolute(evidence)) return existsSync(evidence);
-  return (
-    existsSync(join(workspace, evidence)) || existsSync(join(workspace, "evidence", evidence))
-  );
+  return existsSync(join(workspace, "evidence", evidence));
 }
 
 interface Hedera {

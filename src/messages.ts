@@ -45,7 +45,7 @@ export interface Ending {
   /** Cumulative for the session, so the last one wins rather than the sum. */
   costUsd: number | undefined;
   /** Set when the SDK stopped the agent itself, e.g. a turn limit. */
-  failure: string | null;
+  failure: { reason: string; recoverable: boolean } | null;
 }
 
 /**
@@ -75,8 +75,24 @@ export function endingOf(message: unknown, maxTurns: number): Ending | null {
   };
 }
 
-/** Why the SDK stopped the agent itself, in the harness's words rather than its own. */
-function describeStop(subtype: string | undefined, maxTurns: number): string {
-  if (subtype === "error_max_turns") return `it used all ${maxTurns} of its turns`;
-  return `it stopped early (${subtype ?? "error"})`;
+/**
+ * Why the SDK stopped the agent, and whether asking again could get further.
+ *
+ * Only a turn limit is recoverable: the work was unfinished and another slice
+ * finishes it. A spend cap is not — each pass is its own `query()` with its own
+ * allowance, so retrying a budget breach spends the cap twice, which is the one
+ * thing a spend cap exists to prevent. An execution error is not a bound at
+ * all.
+ */
+function describeStop(
+  subtype: string | undefined,
+  maxTurns: number,
+): { reason: string; recoverable: boolean } {
+  if (subtype === "error_max_turns") {
+    return { reason: `it used all ${maxTurns} of its turns`, recoverable: true };
+  }
+  if (subtype === "error_max_budget_usd") {
+    return { reason: "it reached its spend limit", recoverable: false };
+  }
+  return { reason: `it stopped early (${subtype ?? "error"})`, recoverable: false };
 }
