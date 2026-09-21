@@ -29,10 +29,11 @@ function fails(where: string, evidence = ["shot.png"]): Outcome {
   return {
     type: "verdict",
     verdict: { pass: false, failures: [{ what: "broken", where, evidence }] },
+    checks: [],
   };
 }
 
-const PASSES: Outcome = { type: "verdict", verdict: { pass: true, failures: [] } };
+const PASSES: Outcome = { type: "verdict", verdict: { pass: true, failures: [] }, checks: [] };
 
 interface Driven {
   events: HarnessEvent[];

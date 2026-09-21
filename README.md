@@ -142,7 +142,8 @@ evaluator checked rather than taking its word.
     build.txt
     test.txt
     evaluate.jsonl     every message from the judging agent
-    verdict.json       pass/fail with findings
+    verdict.json       what the evaluator answered, before the harness had its say
+    checks.json        claims it asked the harness to settle, and what was found
     feedback.json      what this attempt was told went wrong
     evidence/          screenshots, page snapshots, saved responses
   result.json          { passed, attempts, branch, timings, skills, history }
@@ -159,6 +160,8 @@ Four rules, each guarding a specific way this could lie to you.
 **The evaluator cannot see your code.** It runs in a directory containing only the spec, with the repo denied at the sandbox. Judging the code instead of the app is the failure that makes a passing run worthless.
 
 **A verdict must show its work.** Every failure cites evidence, and the harness confirms those files exist before accepting the verdict. A finding it cannot see is not a finding.
+
+**And its claims are checked, not taken.** The evaluator declares what should be true on chain; the harness reads the mirror node itself and decides. A claim it declared and the harness found untrue turns a pass into a fail — never the reverse, and a claim the harness cannot read is a warning rather than a failure. `verdict.json` keeps what the evaluator answered; `checks.json` keeps what was actually there.
 
 **A verdict is never re-rolled.** If the evaluator answers, that answer stands. Only the *absence* of an answer — no verdict, a malformed one, or evidence that is not there — earns a second look, once.
 

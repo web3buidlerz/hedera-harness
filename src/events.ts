@@ -70,6 +70,8 @@ export type HarnessEvent =
       durationMs: number;
     }
   | { type: "committed"; attempt: number; sha: string | null }
+  /** One claim the harness settled itself. `errored` is a warning, never a failure. */
+  | { type: "check:settled"; id: string; state: "held" | "failed" | "errored"; detail: string }
   | {
       type: "attempt:finished";
       attempt: number;
