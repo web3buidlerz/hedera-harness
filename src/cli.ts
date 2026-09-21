@@ -51,6 +51,9 @@ interface Interruptible {
   attempts: number;
 }
 
+// ponytail: module-level, for the same reason events.ts is — a harness process
+// is exactly one run, and a signal handler cannot be handed state it was not
+// given. Per-run if a process ever hosts two.
 const context: Interruptible = { attempts: 0 };
 let interrupting = false;
 

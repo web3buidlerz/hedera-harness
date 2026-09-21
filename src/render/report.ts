@@ -56,6 +56,15 @@ export async function report(options: ReportOptions): Promise<void> {
 
   console.log(`\n${bold("report")}  ${dim(started?.stamp ?? dir)}`);
   summary(events, started, finished);
+
+  // A warning that belongs to no attempt — an interrupt, a branch the run could
+  // not get back to. Attributing events properly means these no longer land in
+  // whichever attempt happened to be open, so they need somewhere of their own
+  // rather than disappearing.
+  for (const note of events) {
+    if (note.type !== "note" || note.level !== "warn" || note.attempt !== undefined) continue;
+    console.log(`\n${yellow("!")} ${dim(note.text.trim())}`);
+  }
   for (const [attempt, mine] of byAttempt) {
     await section(dir, events, attempt, mine, options.full);
   }
@@ -210,17 +219,12 @@ async function audit(
   }
 }
 
-/**
- * Tool calls split by the phase that made them. Like the attempt itself this is
- * positional: a `tool` event says what was called, not who called it.
- */
+/** Tool calls split by the phase that made them, which each call now states. */
 function tools(mine: HarnessEvent[]): Map<string, Array<Extract<HarnessEvent, { type: "tool" }>>> {
   const byPhase = new Map<string, Array<Extract<HarnessEvent, { type: "tool" }>>>();
-  let phase = "";
   for (const event of mine) {
-    if (event.type === "phase:started") phase = event.phase;
-    if (event.type !== "tool" || phase === "") continue;
-    byPhase.set(phase, [...(byPhase.get(phase) ?? []), event]);
+    if (event.type !== "tool") continue;
+    byPhase.set(event.phase, [...(byPhase.get(event.phase) ?? []), event]);
   }
   return byPhase;
 }
@@ -267,24 +271,19 @@ function cost(events: HarnessEvent[]): { total: number; partial: boolean } | nul
 }
 
 /**
- * Splits the stream by attempt, by position rather than by field.
+ * Splits the stream by attempt, reading the attempt off each event.
  *
- * Only some events name their attempt: a command or a warning does not, because
- * the same code path serves DOCTOR's baseline and every attempt after it. The
- * stream is ordered, though, so the last `phase:started` says whose work
- * everything after it is — which is information the file has and no single
- * event does.
+ * This used to be positional — bucket everything after a `phase:started` with
+ * that phase's attempt — which was right until any event was emitted between
+ * phases, and then silently wrong: nothing errors, nothing fails, the report is
+ * just quietly attributed to the wrong attempt. Events carry it now.
  */
 function group(events: HarnessEvent[]): Map<number, HarnessEvent[]> {
   const byAttempt = new Map<number, HarnessEvent[]>();
-  let current: number | undefined;
-
   for (const event of events) {
-    if (event.type === "phase:started") current = event.attempt;
-    if (current === undefined) continue;
-    const bucket = byAttempt.get(current) ?? [];
-    bucket.push(event);
-    byAttempt.set(current, bucket);
+    const attempt = "attempt" in event ? event.attempt : undefined;
+    if (attempt === undefined) continue;
+    byAttempt.set(attempt, [...(byAttempt.get(attempt) ?? []), event]);
   }
   return new Map([...byAttempt].sort(([a], [b]) => a - b));
 }

@@ -145,7 +145,9 @@ evaluator checked rather than taking its word.
     verdict.json       pass/fail with findings
     feedback.json      what this attempt was told went wrong
     evidence/          screenshots, page snapshots, saved responses
-  result.json          { passed, attempts, branch, timings }
+  result.json          { passed, attempts, branch, timings, skills, history }
+                       history is one entry per attempt, with the failures it
+                       produced and the id each hashes to
 ```
 
 `.harness/` is added to `.git/info/exclude`, so it never appears in your diffs and never needs a `.gitignore` entry.

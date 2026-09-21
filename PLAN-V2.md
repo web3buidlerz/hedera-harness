@@ -156,7 +156,8 @@ The run works on a new branch `harness/<timestamp>` created from the current com
     verdict.json       submit_verdict payload, exactly as the evaluator sent it
     feedback.json      { ok, failures } — what this attempt failed on, for review
     evidence/          playwright-cli screenshots and snapshots
-  result.json          { passed, attempts, branch, failures: per attempt, by hash }
+  result.json          { passed, attempts, branch, timings, skills, history } —
+                       history carries each attempt's failures, by hash
 ```
 
 Written into the repo but git-excluded, so the artifacts sit beside the branch they belong to without entering it. The last thing printed is the branch name and `passed: true|false`.
