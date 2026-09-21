@@ -113,7 +113,7 @@ submit_verdict({
 
 Web2 checks are what the browser shows. Web3 checks are mirror-node reads (`/api/v1/topics/{id}/messages`, `/api/v1/accounts/{id}`, `/api/v1/transactions/…`) — public, no credentials. The evaluator holds no keys.
 
-A verdict is never re-rolled: a well-formed `submit_verdict` fails or passes the attempt, and `failures` become the repair prompt. Re-running an evaluator that answered is the harness grading its own homework.
+A verdict is never re-rolled: a well-formed `submit_verdict` fails or passes the attempt, and `failures` become the repair prompt. Re-running an evaluator that answered is the harness grading its own homework. What the verdict is *checked against* is [Verifying the verdict](#verifying-the-verdict) — the judge's answer is accepted, but its claims are settled mechanically.
 
 EVALUATE is re-run once against the same commit only when there is **no verdict**, which means exactly three things:
 
@@ -239,6 +239,94 @@ Four pieces, each its own change, each useful alone:
    attempts, findings, evidence. This is where someone actually sits with time
    to spend, and the only place a richer terminal UI would earn a dependency.
 
+## Verifying the verdict
+
+Seven runs have reached a verdict and all seven passed on the first attempt. That is consistent with two stories — the generator is good, or the judge is lenient — and nothing in the harness can currently tell them apart. The published numbers say the question is worth asking: LLM judges agree with human graders around [85% of the time](https://arxiv.org/html/2401.13919v3), the failure direction is [systematically lenient](https://arxiv.org/pdf/2507.11662) rather than random, and judges [over-reward their own model family](https://www.adaline.ai/blog/llm-as-a-judge-reliability-bias) — which is what we do, since `--model` is passed to the generator and the evaluator alike.
+
+The rule this section serves is already written down: **a verdict must show its work.** Today that means the harness confirms a cited screenshot *exists*. It should mean the harness confirms the claim is *true*.
+
+**The agent decides what is worth checking. The harness decides whether the check held. The human reads both.**
+
+Everything below follows from one diagnosis: the conflict of interest is not that a check is agent-authored, it is that **the same mind picks the test and renders the verdict, in the same moment**. Benchmarks avoid this structurally — the task author writes the checks, and is nobody being judged — but they can afford it because their tasks are fixed. A spec here is arbitrary prose, so the separation has to come from *when* a check is authored rather than from *who* wrote the task.
+
+### What a check is
+
+A claim the harness can settle without asking anyone:
+
+```ts
+{ kind: "chain", path: "accounts/0.0.4821", field: "balance.balance", expect: { increasedBy: "2.5 hbar" } }
+{ kind: "http",  route: "/accounts", expect: { status: 200 } }
+{ kind: "dom",   route: "/account", selector: "#balance-hbar", expect: { matches: "^\\d+\\.\\d{8}$" } }
+```
+
+Three kinds, and an expectation vocabulary of `equals`, `matches`, `contains`, `atLeast`, `changedBy`, `increasedBy`. Deliberately narrow: enough to express a claim, too little to express a program. The line holds at the point where someone wants a conditional.
+
+A check resolves three ways, not two. It **holds**, it **fails**, or it **errors** — unexecutable, because the route 404s or the selector is malformed. An error is a warning and never a failure: the mechanical layer must never manufacture failures out of its own bugs, or it stops being the thing that can be trusted over the judge.
+
+Chain checks are the ones that carry the weight. When the harness re-reads a selector it is reading the same app the agent read, through the same browser, so it catches an agent misreporting a page and not much else. A chain check reads an independent system the agent cannot influence. For a dApp builder that asymmetry is the whole argument, and it is why `chain` ships before `dom`.
+
+### Three sources, and what each gets wrong
+
+| | authored | covers | fails toward |
+|---|---|---|---|
+| **user** | before the run, by hand or inherited | whatever the user insists on | — |
+| **derived** | at DOCTOR, from the spec alone, before the app exists | routes, selectors, formats, literal values | **false failures** |
+| **discovered** | at EVALUATE, by the judge that used the app | anything the run created — accounts, contracts, transactions | **false passes** |
+
+**Derived checks** are a cheap agent pass at DOCTOR time that reads only the spec and emits checks through an MCP tool, the same pattern as `submit_verdict`. They cannot be rationalised by what the app turned out to do, because they exist before it does anything. They are pinned for the run and reused across attempts, so the target cannot drift under repair.
+
+**Discovered checks** come from the judge, declared as it works. They exist because a derived check can only name what the prose pins. It cannot say *"the account this run created rose by 2.5"* — that account does not exist when the check is written.
+
+That division is not two flavours of the same idea. The halves are disjoint and predictable, and **the half derivation cannot reach is the half worth the most**: runtime entities on chain, where verification is strongest. Neither tier makes the other redundant.
+
+Provenance does not grade authority. A failing check fails the run whichever tier wrote it — a judge that passes over its own failed check has contradicted itself, which is the strongest available reason to reject. What provenance predicts is the *direction* each tier gets things wrong, and each gets the guard its own failure mode needs:
+
+- a derived check is one agent's reading of prose, with no way to check its own interpretation, so a misreading fails a correct app — LLM judgement smuggled into the mechanical layer with override power, which is the rule exactly inverted. **Human confirmation at DOCTOR is the mitigation.**
+- a discovered check shares a mind with the verdict. **The override rule is the mitigation.**
+
+Confirmation reuses the flow DOCTOR already has for commands: show the proposal, take a yes. One cost to accept deliberately — command confirmation happens once per project because `harness.yaml` is committed, while checks are per spec, so this is friction on the main path rather than a one-off. Under `--yes` nobody reads them, and they still bind; that is the same bargain `--yes` already makes.
+
+**User checks are optional and are not primarily for writing by hand.** They are where a previous run's confirmed checks live. Run 1 builds `/status`, its checks are confirmed and pass; run 2 builds something else and inherits them as a floor. That closes the regression gap — today nothing re-verifies what an earlier spec built — and it costs the user nothing, because they already approved those checks once. A floor is not a ceiling: the other two tiers still add whatever they find.
+
+### Declare before you act
+
+Checks are declared before the verdict, not alongside it. The weak argument for this is rationalisation — a judge that authors checks in the same breath as its verdict can pick ones that flatter it. That is plausible and unevidenced, and it is not why the ordering exists.
+
+The load-bearing argument is mechanical: **a delta needs a before-state.** *"The balance rose by exactly 2.5"* is unverifiable unless something captured the balance beforehand. If checks arrive with the verdict, that moment is gone — and it is gone whether or not a verdict has been formed, so "checks first, then verdict" does not fix it either. Declaration has to precede the *action*, not the conclusion:
+
+```
+DOCTOR    derive checks from the spec → confirm → snapshot anything they baseline
+EVALUATE  explore → declare("0.0.4821 will rise by 2.5")   ← harness snapshots now
+                  → act → declare → act …
+                  → submit_verdict → harness settles every declared check
+```
+
+State the prediction, then run the experiment. Checks the spec can name get their baseline before GENERATE has touched anything, which is the cleanest possible before-state; the rest get theirs at declaration.
+
+A failed check's locator — `chain:accounts/0.0.4821:balance.balance` — is exactly the shape failure identity already hashes, so check failures join the open/fixed/new accounting for free.
+
+### Order
+
+1. **The checks protocol, chain only.** `declare_check`, execution with tolerance and bounded retry, the override. No browser and no signer needed — both are HTTP. The first run where the judge passes and a check it authored fails is the finding seven runs could not produce.
+2. **`harness report` renders checks.** This is the human half of the rule and the only mitigation for a judge authoring trivially-true checks: make what it chose to check legible, rather than trying to outlaw weakness.
+3. **Inherited checks.** Carry a previous run's confirmed set forward as a floor.
+4. **`--judge-model`.** One flag, defaulting off the generator's family. Family bias becomes measurable instead of theoretical.
+5. **Derived checks at DOCTOR**, with confirmation.
+6. **DOM checks.**
+7. **The signer.** Port v2's `chainSigner`: an ephemeral funded testnet account, persisted per run so repairs share it, topped up on reuse, swept back at the end, redacted from every artifact. Note the redaction problem is sharper here than in v2, which had only prompt files to clean: our JSONL transcripts record everything the agent did, so a key it echoes is captured permanently. DOCTOR gains a precondition on operator credentials and balance, because a missing key should cost four seconds rather than forty minutes.
+
+The signer is last on confidence grounds and first on capability grounds — until it exists the judge can only assert about reads, and every transactional spec is out of reach. If the benchmark is the goal, it moves up.
+
+### Rejected
+
+**A required checks file.** That is hh's model. It puts a ceiling back on what can ever be verified, and it stops the harness working out of the box.
+
+**`eval.json` as a separate document.** Two files that must agree is how they stop agreeing. The spec stays the only interface, and sharper prose is how a user tightens verification.
+
+**The route gate before the evaluator.** v2's `playwrightGate` walks routes checking status, console errors and hydration. Its job is cost, not trust — the judge's own `http` checks already cover whether a route loads — so it buys failing in four seconds instead of after an evaluation is paid for. Worth having only if evaluation spend becomes the problem.
+
+**Pinning the environment.** Every benchmark that achieves exact verification pins its world: forked mainnet at a fixed block, a sandboxed chain, an in-process mock. The Hedera answer is a local-node profile, and it is a later question. Live testnet is what the generated app will actually run against, and monotone expectations (`atLeast`, `increasedBy`) tolerate a moving chain where `equals` would not.
+
 ## Later
 
 Known improvements, parked deliberately. Each is small; none blocks a working loop.
@@ -253,4 +341,6 @@ Known improvements, parked deliberately. Each is small; none blocks a working lo
 
 ## Not in scope
 
-Multiple specs, scaffolding (`init`), other agent providers, model selection, benchmarking, reports beyond `result.json`, wallet-connected flows in the evaluator (the evaluator has no signer; spec items that need one are judged by what the UI offers).
+Multiple specs, scaffolding (`init`), other agent providers, benchmarking, pinning the chain to a local node.
+
+Two entries have moved out of this list rather than being done. `init` and `harness report` exist; wallet-connected flows are no longer out of scope but unbuilt — [Verifying the verdict](#verifying-the-verdict) plans the signer that unblocks them, and until it lands a spec needing one is still judged on what the UI offers.
