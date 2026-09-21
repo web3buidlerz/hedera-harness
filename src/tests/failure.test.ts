@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { describeFailure, fromStage, fromVerdict } from "../failure.js";
 import { endingOf } from "../messages.js";
+import { nudge } from "../evaluate.js";
 import type { StageFailure } from "../test.js";
 
 function stage(output: string, over: Partial<StageFailure> = {}): StageFailure {
@@ -119,4 +120,25 @@ test("a bound the SDK enforces itself is reported as such", () => {
   );
   assert.equal(endingOf({ type: "result", is_error: false }, 300)?.failure, null);
   assert.equal(endingOf({ type: "assistant" }, 300), null);
+});
+
+/**
+ * An evaluator cut off mid-check needs the opposite advice from one that
+ * finished and forgot to answer. Telling the first it already has what it needs
+ * buys a fast verdict at the cost of a thorough one — and since a breached
+ * bound now becomes a no-verdict rather than killing the run, that is a path
+ * the harness takes on its own.
+ */
+test("the retry tells a cut-off evaluator to finish, not to conclude", () => {
+  const cutOff = nudge({ reason: "it used all 120 of its turns", why: "cut-off" });
+  assert.match(cutOff, /stopped before you were done/);
+  assert.match(cutOff, /Do not pass a requirement you have not actually checked/);
+
+  const unreported = nudge({ reason: "finished without calling submit_verdict", why: "unreported" });
+  assert.match(unreported, /did the work and ended without reporting it/);
+  assert.doesNotMatch(unreported, /stopped before you were done/);
+
+  const unevidenced = nudge({ reason: "cites evidence that is not there", why: "unevidenced" });
+  assert.match(unevidenced, /cited evidence the harness cannot find/);
+  assert.match(unevidenced, /A finding nobody can check is not a finding/);
 });

@@ -11,12 +11,19 @@ import type { Run } from "./run.js";
 
 /** See PLAN-V2 § Bounds — shorter than GENERATE: judging is cheaper than building. */
 const WALL_CLOCK_MS = 20 * 60_000;
-// Loosened from 120 after measuring: at 4x the busiest real evaluation this was
-// the tightest bound in the harness, on specs that have all been small. Turns
-// are the last line of defence, not the first — they exist to stop a cheap
-// endless loop that spend and wall clock would take far too long to catch, so
-// the other two should bind first in any normal run.
-const MAX_TURNS = 300;
+/**
+ * A turn is one round-trip to the model, and real evaluations cost about
+ * $0.012 of them — so this bound is also a spend bound, whether or not it is
+ * named like one. At 120 it bites around $1.68, well clear of MAX_BUDGET_USD
+ * and roughly twice the busiest evaluation yet measured (57 turns).
+ *
+ * It was briefly 300, which works out at ~$4.20 — within 15% of the budget cap,
+ * so the two would have fired at almost the same moment and one of them would
+ * have stopped being a bound at all. Move this only when it has actually
+ * stopped legitimate work, not because it is the tightest number here; something
+ * always is. Breaching it now costs a pause rather than the run.
+ */
+const MAX_TURNS = 120;
 const MAX_BUDGET_USD = 5;
 
 const TOOL = "submit_verdict";
@@ -40,7 +47,20 @@ export interface Verdict {
  */
 export type Outcome =
   | { type: "verdict"; verdict: Verdict }
-  | { type: "no-verdict"; reason: string };
+  | { type: "no-verdict"; reason: string; why: Unanswered };
+
+/**
+ * The three ways an evaluation ends without an answer, which need different
+ * things said to them. Matching on the reason's prose would work until someone
+ * reworded it.
+ */
+export type Unanswered =
+  /** A bound stopped it: it had not decided it was finished. */
+  | "cut-off"
+  /** It ended its own turn without calling the tool. */
+  | "unreported"
+  /** It answered, but cited evidence that is not on disk. */
+  | "unevidenced";
 
 export interface EvaluateOptions {
   repoRoot: string;
@@ -131,12 +151,12 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
     });
     captured.malformed = null;
     ({ outcome } = await pass(options, workspace, server, transcript, {
-      prompt: nudge(outcome.reason),
+      prompt: nudge(outcome),
       captured,
       resume: sessionId,
     }));
     if (outcome.type === "no-verdict") {
-      outcome = { type: "no-verdict", reason: `${outcome.reason} (asked twice)` };
+      outcome = { type: "no-verdict", reason: `${outcome.reason} (asked twice)`, why: outcome.why };
     }
   }
 
@@ -270,22 +290,41 @@ function verdictServer(captured: Captured): ReturnType<typeof createSdkMcpServer
 }
 
 /**
- * What the harness says when it intervenes. The evaluator that produced no
- * verdict on the one real occurrence had not failed or got stuck — it had
- * backgrounded a timer and ended its turn expecting to be woken, which is
- * correct behaviour in an interactive session and fatal in this one.
+ * What the harness says when it intervenes.
+ *
+ * An evaluator that was cut off mid-check needs the opposite advice from one
+ * that finished and forgot to answer. Telling the first that it already has
+ * what it needs would buy a fast verdict at the cost of a thorough one, which
+ * is the only thing this stage is for.
  */
-function nudge(reason: string): string {
-  return [
-    `Your turn ended without a usable verdict: ${reason}`,
+/** Exported for tests: the three-way branch decides how thorough the retry is. */
+export function nudge(outcome: { reason: string; why: Unanswered }): string {
+  const opening = [
+    `Your turn ended without a usable verdict: ${outcome.reason}`,
     "",
     "Nothing resumed you automatically — this message is the harness intervening,",
     "and it is the last turn you get. Do not start anything in the background and",
-    "do not wait to be notified. If you still need to observe something, do it now",
-    "with a command that blocks until it is finished.",
+    "do not wait to be notified: wait in the foreground, with commands that block.",
     "",
-    `Then call ${TOOL}. You already have the evidence you gathered in evidence/.`,
-  ].join("\n");
+  ];
+  const closing = {
+    "cut-off": [
+      "You were stopped before you were done, not because you were wrong. Finish",
+      "the checks you had not reached — the spec is still in spec.md and your",
+      `evidence is still in evidence/ — and only then call ${TOOL}.`,
+      "Do not pass a requirement you have not actually checked.",
+    ],
+    unreported: [
+      `You did the work and ended without reporting it. Call ${TOOL} now with what`,
+      "you found. Check anything you are unsure of first.",
+    ],
+    unevidenced: [
+      "Your verdict cited evidence the harness cannot find. Save the files you",
+      "meant to cite into evidence/, or cite only files that are there, and call",
+      `${TOOL} again. A finding nobody can check is not a finding.`,
+    ],
+  }[outcome.why];
+  return [...opening, ...closing].join("\n");
 }
 
 /**
@@ -297,9 +336,15 @@ function adjudicate(
   captured: { verdict: Verdict | null; malformed: string | null },
   workspace: string,
 ): Outcome {
-  if (captured.malformed !== null) return { type: "no-verdict", reason: captured.malformed };
+  if (captured.malformed !== null) {
+    return { type: "no-verdict", reason: captured.malformed, why: "cut-off" };
+  }
   if (captured.verdict === null) {
-    return { type: "no-verdict", reason: `the evaluator finished without calling ${TOOL}` };
+    return {
+      type: "no-verdict",
+      reason: `the evaluator finished without calling ${TOOL}`,
+      why: "unreported",
+    };
   }
 
   const missing = captured.verdict.failures
@@ -312,6 +357,7 @@ function adjudicate(
       reason:
         `the verdict cites evidence that is not there: ${missing.join(", ")}. ` +
         `A finding the harness cannot see is not a finding.`,
+      why: "unevidenced",
     };
   }
   return { type: "verdict", verdict: captured.verdict };
