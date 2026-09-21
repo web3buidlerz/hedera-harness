@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { describeFailure, fromStage, fromVerdict } from "../failure.js";
+import { endingOf } from "../messages.js";
+import { cited, locators, nudge } from "../evaluate.js";
 import type { StageFailure } from "../test.js";
 
 function stage(output: string, over: Partial<StageFailure> = {}): StageFailure {
@@ -83,4 +85,99 @@ test("the repair prompt says what went wrong, in full", () => {
     describeFailure({ kind: "verdict", id: "x", where: "/a", what: "broken", evidence: ["p.png"] }),
     "/a: broken [p.png]",
   );
+});
+
+/**
+ * Both numbers on the generation summary were wrong, in ways that only showed
+ * against a real transcript: turns were counted as assistant messages (84 for a
+ * conversation the SDK measured at 41 and capped at 300), and one conversation
+ * can end twice when a background subagent wakes it with a task-notification.
+ */
+test("turns accumulate across wake-ups; cost does not", () => {
+  const stream = [
+    { type: "assistant" },
+    { type: "result", num_turns: 39, total_cost_usd: 0.62, is_error: false },
+    { type: "assistant" },
+    // The second ending: a background subagent finished and woke the session.
+    { type: "result", num_turns: 2, total_cost_usd: 0.7, is_error: false, origin: { kind: "task-notification" } },
+  ];
+  let turns = 0;
+  let cost: number | undefined;
+  for (const message of stream) {
+    const ending = endingOf(message, 300);
+    if (ending === null) continue;
+    turns += ending.turns;
+    cost = ending.costUsd;
+  }
+  assert.equal(turns, 41, "turns are per wake-up, so they sum");
+  assert.equal(cost, 0.7, "total_cost_usd is already cumulative, so the last one wins");
+});
+
+/**
+ * Each pass is its own `query()` with its own allowance, so treating every
+ * stop as recoverable quietly buys a second helping of whatever was just
+ * exhausted — which is fine for turns and exactly wrong for spend.
+ */
+test("only a bound another turn could satisfy is recoverable", () => {
+  assert.deepEqual(endingOf({ type: "result", is_error: true, subtype: "error_max_turns" }, 300)?.failure, {
+    reason: "it used all 300 of its turns",
+    recoverable: true,
+  });
+  assert.deepEqual(endingOf({ type: "result", is_error: true, subtype: "error_max_budget_usd" }, 300)?.failure, {
+    reason: "it reached its spend limit",
+    recoverable: false,
+  });
+  assert.equal(
+    endingOf({ type: "result", is_error: true, subtype: "error_during_execution" }, 300)?.failure?.recoverable,
+    false,
+  );
+  assert.equal(endingOf({ type: "result", is_error: false }, 300)?.failure, null);
+  assert.equal(endingOf({ type: "assistant" }, 300), null);
+});
+
+/**
+ * An evaluator cut off mid-check needs the opposite advice from one that
+ * finished and forgot to answer. Telling the first it already has what it needs
+ * buys a fast verdict at the cost of a thorough one — and since a breached
+ * bound now becomes a no-verdict rather than killing the run, that is a path
+ * the harness takes on its own.
+ */
+test("the retry tells a cut-off evaluator to finish, not to conclude", () => {
+  const cutOff = nudge({ reason: "it used all 120 of its turns", why: "cut-off" });
+  assert.match(cutOff, /stopped before you were done/);
+  assert.match(cutOff, /Do not pass a requirement you have not actually checked/);
+
+  const unreported = nudge({ reason: "finished without calling submit_verdict", why: "unreported" });
+  assert.match(unreported, /did the work and ended without reporting it/);
+  assert.doesNotMatch(unreported, /stopped before you were done/);
+
+  const unevidenced = nudge({ reason: "cites evidence that is not there", why: "unevidenced" });
+  assert.match(unevidenced, /cited evidence the harness cannot find/);
+  assert.match(unevidenced, /A finding nobody can check is not a finding/);
+});
+
+/**
+ * Both halves of the citation bug. `resolves()` accepted three spellings of one
+ * file and the repair prompt then built a path from the raw string, so
+ * `evidence/shot.png` became `evidence/evidence/shot.png` — unopenable, in the
+ * one message whose job is to hand the agent something it can open.
+ */
+test("a citation is reduced to the name it has inside evidence/", () => {
+  assert.equal(cited("shot.png"), "shot.png");
+  assert.equal(cited("evidence/shot.png"), "shot.png");
+  assert.equal(cited("./evidence/shot.png"), "shot.png");
+  assert.equal(cited("/tmp/harness-eval-x/evidence/shot.png"), "shot.png");
+  assert.equal(cited("nested/shot.png"), "nested/shot.png", "a directory under evidence/ is kept");
+  const url = "https://testnet.mirrornode.hedera.com/api/v1/blocks";
+  assert.equal(cited(url), url, "a URL is not a path");
+});
+
+test("a verdict's findings are compared by where, not by how they are evidenced", () => {
+  const one = { pass: false, failures: [{ what: "a", where: "/x", evidence: ["a.png"] }] };
+  const reworded = { pass: false, failures: [{ what: "a, differently", where: "/x", evidence: ["b.png"] }] };
+  const dropped = { pass: true, failures: [] };
+
+  assert.equal(locators(one), locators(reworded), "recitation and rewording are not a new judgement");
+  assert.notEqual(locators(one), locators(dropped), "dropping a finding is");
+  assert.equal(locators(null), "");
 });

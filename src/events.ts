@@ -64,6 +64,8 @@ export type HarnessEvent =
       attempt: number;
       verdict: "pass" | "fail" | "none";
       findings: number;
+      /** Same caveat as generation's: a list-price equivalent, not money. */
+      costUsd?: number | undefined;
       durationMs: number;
     }
   | { type: "committed"; attempt: number; sha: string | null }

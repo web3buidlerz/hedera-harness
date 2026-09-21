@@ -1,21 +1,40 @@
 import { appendFile, cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { emit } from "./events.js";
-import { describeMessage } from "./messages.js";
+import { describeMessage, endingOf } from "./messages.js";
 import type { Run } from "./run.js";
 
 /** See PLAN-V2 § Bounds — shorter than GENERATE: judging is cheaper than building. */
 const WALL_CLOCK_MS = 20 * 60_000;
+/**
+ * A turn is one round-trip to the model, and real evaluations cost about
+ * $0.012 of them — so this bound is also a spend bound, whether or not it is
+ * named like one. At 120 it bites around $1.68, well clear of MAX_BUDGET_USD
+ * and roughly twice the busiest evaluation yet measured (57 turns).
+ *
+ * It was briefly 300, which works out at ~$4.20 — within 15% of the budget cap,
+ * so the two would have fired at almost the same moment and one of them would
+ * have stopped being a bound at all. Move this only when it has actually
+ * stopped legitimate work, not because it is the tightest number here; something
+ * always is. Breaching it now costs a pause rather than the run.
+ */
 const MAX_TURNS = 120;
 const MAX_BUDGET_USD = 5;
 
 const TOOL = "submit_verdict";
 const HARNESS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+export class EvaluateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EvaluateError";
+  }
+}
 
 export interface Failure {
   what: string;
@@ -35,7 +54,20 @@ export interface Verdict {
  */
 export type Outcome =
   | { type: "verdict"; verdict: Verdict }
-  | { type: "no-verdict"; reason: string };
+  | { type: "no-verdict"; reason: string; why: Unanswered };
+
+/**
+ * The three ways an evaluation ends without an answer, which need different
+ * things said to them. Matching on the reason's prose would work until someone
+ * reworded it.
+ */
+export type Unanswered =
+  /** A bound stopped it: it had not decided it was finished. */
+  | "cut-off"
+  /** It ended its own turn without calling the tool. */
+  | "unreported"
+  /** It answered, but cited evidence that is not on disk. */
+  | "unevidenced";
 
 export interface EvaluateOptions {
   repoRoot: string;
@@ -87,48 +119,112 @@ const failureShape = z.object({
  * already expecting a broken app.
  */
 export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
-  const { repoRoot, run, attempt, appUrl } = options;
+  const { run, attempt, appUrl } = options;
 
   const workspace = await mkdtemp(join(tmpdir(), "harness-eval-"));
-  const evidenceDir = join(workspace, "evidence");
-  await mkdir(evidenceDir);
+  await mkdir(join(workspace, "evidence"));
   await cp(options.specPath, join(workspace, "spec.md"));
 
-  const captured: { verdict: Verdict | null; malformed: string | null } = {
-    verdict: null,
-    malformed: null,
-  };
-
-  const server = createSdkMcpServer({
-    name: "harness",
-    tools: [
-      tool(
-        TOOL,
-        "Report whether the running app satisfies the spec. Call this exactly once, at the end.",
-        {
-          pass: z.boolean().describe("true only if every requirement in the spec is met"),
-          failures: z
-            .array(failureShape)
-            .describe("Empty when passing. One entry per requirement that is not met."),
-        },
-        async (args) => {
-          captured.verdict = { pass: args.pass, failures: args.failures as Failure[] };
-          return { content: [{ type: "text", text: "Verdict recorded." }] };
-        },
-      ),
-    ],
-  });
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WALL_CLOCK_MS);
+  const captured: Captured = { verdict: null, malformed: null };
+  const server = verdictServer(captured);
   const transcript = await run.path(`attempt-${attempt}`, "evaluate.jsonl");
-  const startedAt = Date.now();
+
   emit({
     type: "phase:started",
     phase: "evaluate",
     attempt,
     detail: `${options.model} · blind · ${appUrl}`,
   });
+
+  let { outcome, sessionId } = await pass(options, workspace, server, transcript, {
+    prompt: brief(appUrl, hedera()),
+    captured,
+  });
+
+  if (outcome.type === "no-verdict") {
+    // Resumed, not restarted. A fresh evaluator would re-open the browser,
+    // re-read the chain and re-run every wait from zero — on the one real run
+    // where this fired, the restart repeated all 28 tool calls and doubled the
+    // cost of the evaluation. Continuing the session keeps the evidence it
+    // already gathered and only asks for the answer.
+    //
+    // It does not weaken the rule that a verdict is never re-rolled: that rule
+    // stops an evaluator diffing against its own previous verdict, and in a
+    // no-verdict case there is no previous verdict to diff against.
+    emit({
+      type: "note",
+      level: "warn",
+      text: `no verdict (${outcome.reason}) — asking the same evaluator to finish`,
+    });
+    // The one retry that starts from an existing verdict. The app has not
+    // changed between passes — same commit, same server — so the only correct
+    // response to a broken citation is to save the file or name one that
+    // exists. A retry that drops a finding instead has re-rolled a verdict,
+    // which is the one thing this stage may never do.
+    const judged = outcome.why === "unevidenced" ? locators(captured.verdict) : null;
+
+    captured.malformed = null;
+    ({ outcome } = await pass(options, workspace, server, transcript, {
+      prompt: nudge(outcome),
+      captured,
+      resume: sessionId,
+    }));
+
+    if (judged !== null && outcome.type === "verdict") {
+      const now = locators(outcome.verdict);
+      if (now !== judged) {
+        outcome = {
+          type: "no-verdict",
+          reason:
+            `the retry changed its findings rather than its citations ` +
+            `(${judged || "none"} became ${now || "none"}). It was asked to fix ` +
+            `how a finding is evidenced, not whether it stands.`,
+          why: "unevidenced",
+        };
+      }
+    }
+    if (outcome.type === "no-verdict") {
+      outcome = { type: "no-verdict", reason: `${outcome.reason} (asked twice)`, why: outcome.why };
+    }
+  }
+
+  // Evidence is collected whatever the outcome — a run that produced no verdict
+  // is exactly when you want to see what the evaluator was looking at.
+  await cp(join(workspace, "evidence"), await run.path(`attempt-${attempt}`, "evidence"), {
+    recursive: true,
+  });
+
+  if (outcome.type === "verdict") {
+    await writeFile(
+      await run.path(`attempt-${attempt}`, "verdict.json"),
+      `${JSON.stringify(outcome.verdict, null, 2)}\n`,
+    );
+  }
+  return outcome;
+}
+
+interface Captured {
+  verdict: Verdict | null;
+  malformed: string | null;
+}
+
+/**
+ * One turn of the evaluator, bounded on its own. Returns what the harness makes
+ * of it — a verdict, or one of the three ways there is not one.
+ */
+async function pass(
+  options: EvaluateOptions,
+  workspace: string,
+  server: ReturnType<typeof createSdkMcpServer>,
+  transcript: string,
+  turn: { prompt: string; captured: Captured; resume?: string | undefined },
+): Promise<{ outcome: Outcome; sessionId: string | undefined }> {
+  const { repoRoot, attempt } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WALL_CLOCK_MS);
+  const startedAt = Date.now();
+  let costUsd: number | undefined;
+  let sessionId: string | undefined;
 
   // The agent's Bash resolves `playwright-cli` from the harness's own install,
   // so the target repo does not have to depend on it.
@@ -137,10 +233,11 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
 
   try {
     const conversation = query({
-      prompt: brief(appUrl, hedera()),
+      prompt: turn.prompt,
       options: {
         cwd: workspace,
         model: options.model,
+        ...(turn.resume === undefined ? {} : { resume: turn.resume }),
         plugins: [{ type: "local", path: playwrightSkills() }],
         mcpServers: { harness: server },
         settingSources: [],
@@ -162,37 +259,121 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
       await appendFile(transcript, `${JSON.stringify(message)}\n`);
       const step = describeMessage(message);
       if (step !== null) emit({ type: "tool", tool: step.tool, argument: step.argument });
+      sessionId ??= message.session_id;
+      // A bound the SDK enforces itself arrives as an error result and *then*
+      // throws when the iterator is pulled again. Reading it here is what turns
+      // "the run died" into "no verdict, ask once more", which is what the
+      // bounds table always said it was.
+      const ending = endingOf(message, MAX_TURNS);
+      if (ending !== null) {
+        costUsd = ending.costUsd;
+        if (ending.failure !== null) {
+          const stopped = `the evaluator stopped because ${ending.failure.reason}`;
+          // A bound another turn could satisfy earns the retry the bounds table
+          // always promised. Anything else ends the run rather than quietly
+          // buying a second allowance of whatever was just exhausted.
+          if (!ending.failure.recoverable) throw new EvaluateError(stopped);
+          turn.captured.malformed = stopped;
+        }
+      }
     }
   } catch (error) {
+    if (error instanceof EvaluateError) throw error;
     if (controller.signal.aborted) {
-      captured.malformed = `the evaluator did not finish within ${WALL_CLOCK_MS / 60_000} minutes`;
-    } else {
+      turn.captured.malformed = `the evaluator did not finish within ${WALL_CLOCK_MS / 60_000} minutes`;
+    } else if (turn.captured.malformed === null) {
       throw error;
     }
+    // Otherwise the stream already said why it stopped, and the throw is the
+    // same news arriving twice.
   } finally {
     clearTimeout(timer);
     process.env["PATH"] = previousPath;
   }
 
-  // Evidence is collected whatever the outcome — a run that produced no
-  // verdict is exactly when you want to see what the evaluator was looking at.
-  await cp(evidenceDir, await run.path(`attempt-${attempt}`, "evidence"), { recursive: true });
-
-  const outcome = adjudicate(captured, workspace);
+  const outcome = adjudicate(turn.captured, workspace);
   emit({
     type: "evaluate:finished",
     attempt,
     verdict: outcome.type === "no-verdict" ? "none" : outcome.verdict.pass ? "pass" : "fail",
     findings: outcome.type === "no-verdict" ? 0 : outcome.verdict.failures.length,
+    costUsd,
     durationMs: Date.now() - startedAt,
   });
-  if (outcome.type === "verdict") {
-    await writeFile(
-      await run.path(`attempt-${attempt}`, "verdict.json"),
-      `${JSON.stringify(outcome.verdict, null, 2)}\n`,
-    );
-  }
-  return outcome;
+  return { outcome, sessionId };
+}
+
+function verdictServer(captured: Captured): ReturnType<typeof createSdkMcpServer> {
+  return createSdkMcpServer({
+    name: "harness",
+    tools: [
+      tool(
+        TOOL,
+        "Report whether the running app satisfies the spec. Call this exactly once, at the end.",
+        {
+          pass: z.boolean().describe("true only if every requirement in the spec is met"),
+          failures: z
+            .array(failureShape)
+            .describe("Empty when passing. One entry per requirement that is not met."),
+        },
+        async (args) => {
+          const failures = (args.failures as Failure[]).map((failure) => ({
+            ...failure,
+            evidence: failure.evidence.map(cited),
+          }));
+          captured.verdict = { pass: args.pass, failures };
+          return { content: [{ type: "text", text: "Verdict recorded." }] };
+        },
+      ),
+    ],
+  });
+}
+
+/**
+ * What the harness says when it intervenes.
+ *
+ * An evaluator that was cut off mid-check needs the opposite advice from one
+ * that finished and forgot to answer. Telling the first that it already has
+ * what it needs would buy a fast verdict at the cost of a thorough one, which
+ * is the only thing this stage is for.
+ */
+/** What a verdict found, ignoring how it evidenced it. Order-insensitive. */
+export function locators(verdict: Verdict | null): string {
+  if (verdict === null) return "";
+  return verdict.failures.map((failure) => failure.where).sort().join(", ");
+}
+
+/** Exported for tests: the three-way branch decides how thorough the retry is. */
+export function nudge(outcome: { reason: string; why: Unanswered }): string {
+  const opening = [
+    `Your turn ended without a usable verdict: ${outcome.reason}`,
+    "",
+    "Nothing resumed you automatically — this message is the harness intervening,",
+    "and it is the last turn you get. Do not start anything in the background and",
+    "do not wait to be notified: wait in the foreground, with commands that block.",
+    "",
+  ];
+  const closing = {
+    "cut-off": [
+      "You were stopped before you were done, not because you were wrong. Finish",
+      "the checks you had not reached — the spec is still in spec.md and your",
+      `evidence is still in evidence/ — and only then call ${TOOL}.`,
+      "Do not pass a requirement you have not actually checked.",
+    ],
+    unreported: [
+      `You did the work and ended without reporting it. Call ${TOOL} now with what`,
+      "you found. Check anything you are unsure of first.",
+    ],
+    unevidenced: [
+      "Your verdict cited evidence the harness cannot find. Save the files you",
+      "meant to cite into evidence/, or cite only files that are there, and call",
+      `${TOOL} again. A finding nobody can check is not a finding.`,
+      "",
+      "Report the same findings. You are fixing how they are evidenced, not",
+      "whether they stand — the app has not changed since you looked at it.",
+    ],
+  }[outcome.why];
+  return [...opening, ...closing].join("\n");
 }
 
 /**
@@ -204,9 +385,15 @@ function adjudicate(
   captured: { verdict: Verdict | null; malformed: string | null },
   workspace: string,
 ): Outcome {
-  if (captured.malformed !== null) return { type: "no-verdict", reason: captured.malformed };
+  if (captured.malformed !== null) {
+    return { type: "no-verdict", reason: captured.malformed, why: "cut-off" };
+  }
   if (captured.verdict === null) {
-    return { type: "no-verdict", reason: `the evaluator finished without calling ${TOOL}` };
+    return {
+      type: "no-verdict",
+      reason: `the evaluator finished without calling ${TOOL}`,
+      why: "unreported",
+    };
   }
 
   const missing = captured.verdict.failures
@@ -219,24 +406,35 @@ function adjudicate(
       reason:
         `the verdict cites evidence that is not there: ${missing.join(", ")}. ` +
         `A finding the harness cannot see is not a finding.`,
+      why: "unevidenced",
     };
   }
   return { type: "verdict", verdict: captured.verdict };
 }
 
 /**
- * Evidence is a file the evaluator saved, or a URL it read. Both must be
- * checkable. A relative name is tried against the workspace and against
- * `evidence/` — the agent writes `evidence/shot.png` as often as `shot.png`,
- * and rejecting a real file over which prefix it used would be pedantry
- * indistinguishable from the check that matters.
+ * A citation reduced to the name it has inside `evidence/`.
+ *
+ * The evaluator writes `shot.png`, `evidence/shot.png` and absolute paths into
+ * its own workspace, all meaning the same file. Accepting every form and then
+ * building a path from the raw string produced `evidence/evidence/shot.png` in
+ * the repair prompt — an unopenable path, in the one message whose job is to
+ * hand the agent something it can open. Normalising once, here, means the check
+ * and the path it later becomes cannot disagree.
+ */
+export function cited(evidence: string): string {
+  if (/^https?:\/\//.test(evidence)) return evidence;
+  return evidence.replace(/^(?:.*\/)?evidence\//, "").replace(/^\.\//, "");
+}
+
+/**
+ * Evidence is a file under `evidence/`, or a URL. Nothing else: only that
+ * directory is copied into the run, so a file cited from anywhere else passes
+ * the check and then points nowhere.
  */
 function resolves(evidence: string, workspace: string): boolean {
   if (/^https?:\/\//.test(evidence)) return true;
-  if (isAbsolute(evidence)) return existsSync(evidence);
-  return (
-    existsSync(join(workspace, evidence)) || existsSync(join(workspace, "evidence", evidence))
-  );
+  return existsSync(join(workspace, "evidence", evidence));
 }
 
 interface Hedera {
@@ -277,6 +475,12 @@ function brief(appUrl: string, chain: Hedera): string {
     "  so every finding can be checked afterwards",
     "",
     "You cannot see the source code and should not try; judge only observable behaviour.",
+    "",
+    "**You get one turn and nothing will resume you.** Never start a command in the",
+    "background and end your turn waiting to be notified — no notification can arrive,",
+    "and a turn that ends without a verdict throws the whole evaluation away. If you",
+    "need to wait, wait in the foreground: a blocking command costs nothing while it",
+    `runs, and you have ${WALL_CLOCK_MS / 60_000} minutes for the entire check.`,
     "",
     `When you are done, call ${TOOL} exactly once. Pass only if every requirement in the`,
     "spec is met. For each requirement that is not met, give one entry naming what a user",

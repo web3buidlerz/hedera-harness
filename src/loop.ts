@@ -135,38 +135,13 @@ async function assess(options: LoopOptions, attempt: number, timings: Timings): 
   const server = await startServer(config.serve, repoRoot);
   const evaluateStarted = Date.now();
   try {
-    return verdictFeedback(await withOneRetry(options, attempt, server.url));
+    return verdictFeedback(
+      await evaluate({ repoRoot, run, specPath: options.specPath, attempt, appUrl: server.url, model: options.model }),
+    );
   } finally {
     timings.evaluateMs += Date.now() - evaluateStarted;
     await server.stop();
   }
-}
-
-/**
- * A verdict is final and never re-rolled. Only the absence of one earns a
- * second look, and only once — a second miss is the evaluator failing, not
- * the app, so the run aborts rather than charging it to the generator.
- */
-async function withOneRetry(
-  options: LoopOptions,
-  attempt: number,
-  appUrl: string,
-): Promise<Outcome> {
-  const { repoRoot, run, specPath } = options;
-  const first = await evaluate({ repoRoot, run, specPath, attempt, appUrl, model: options.model });
-  if (first.type === "verdict") return first;
-
-  emit({
-    type: "note",
-    level: "warn",
-    text: `no verdict (${first.reason}) — evaluating once more against the same commit`,
-  });
-  const second = await evaluate({ repoRoot, run, specPath, attempt, appUrl, model: options.model });
-  if (second.type === "verdict") return second;
-
-  throw new AbortRun(
-    `the evaluator produced no verdict twice against the same commit: ${second.reason}`,
-  );
 }
 
 function stageFeedback(failure: StageFailure): Feedback {
