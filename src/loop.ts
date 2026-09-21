@@ -24,6 +24,18 @@ export interface LoopOptions {
   model: string;
   /** Repo-relative spec path, when it lives in the repo. Never committed as work. */
   specInRepo?: string | undefined;
+  /**
+   * The two calls that need an agent. Injectable because the decisions this
+   * loop makes across attempts — what repeated, when to abandon the session,
+   * when to stop — cannot otherwise be exercised without paying for a model to
+   * fail on cue. Everything else in an attempt runs for real.
+   */
+  agents?: Agents;
+}
+
+export interface Agents {
+  generate: typeof generate;
+  evaluate: typeof evaluate;
 }
 
 export interface LoopResult {
@@ -64,6 +76,7 @@ export class AbortRun extends Error {
  */
 export async function runLoop(options: LoopOptions): Promise<LoopResult> {
   const { repoRoot, run, maxAttempts } = options;
+  const build = options.agents?.generate ?? generate;
 
   const timings: Timings = { generateMs: 0, testMs: 0, evaluateMs: 0 };
   // Recorded once: what the agent could reach. A run that behaves differently
@@ -77,7 +90,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
   const history: Attempt[] = [];
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const generated = await generate({ repoRoot, run, prompt, attempt, resume: session, model: options.model });
+    const generated = await build({ repoRoot, run, prompt, attempt, resume: session, model: options.model });
     session = generated.sessionId;
     timings.generateMs += generated.durationMs;
     if (skills.length === 0) skills = generated.skills;
@@ -142,11 +155,12 @@ async function assess(options: LoopOptions, attempt: number, timings: Timings): 
 
   if (failure !== null) return stageFeedback(failure);
 
+  const judge = options.agents?.evaluate ?? evaluate;
   const server = await startServer(config.serve, repoRoot);
   const evaluateStarted = Date.now();
   try {
     return verdictFeedback(
-      await evaluate({ repoRoot, run, specPath: options.specPath, attempt, appUrl: server.url, model: options.model }),
+      await judge({ repoRoot, run, specPath: options.specPath, attempt, appUrl: server.url, model: options.model }),
     );
   } finally {
     timings.evaluateMs += Date.now() - evaluateStarted;
