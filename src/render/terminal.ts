@@ -4,6 +4,7 @@ import { CONFIG_FILE } from "../config.js";
 import { type HarnessEvent, subscribe } from "../events.js";
 import { describeFailure } from "../failure.js";
 import {
+  banner,
   bold,
   clip,
   describeTimings,
@@ -42,10 +43,12 @@ export function renderToTerminal(): () => void {
       case "run:started": {
         repoRoot = event.repo;
         startedFrom = event.from;
+        console.log(banner());
         // Read once, at a glance, to confirm the run is pointed where you think
         // it is. Labels dim, values at full strength — the values are the part
         // being checked.
-        console.log(`\n${bold(`harness ${event.command}`)}  ${dim(event.stamp)}`);
+        // Not "harness run": the wordmark above just said harness.
+        console.log(`\n${bold(event.command)}  ${dim(event.stamp)}`);
         console.log(`${dim("repo  ")} ${event.repo}`);
         if (event.spec !== undefined) {
           console.log(`${dim("spec  ")} ${event.specInRepo ?? event.spec}`);

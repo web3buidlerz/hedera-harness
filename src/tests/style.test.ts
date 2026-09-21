@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { bold, dim, frame, green, heading, tick, verdict } from "../style.js";
+import { banner, bold, dim, frame, green, heading, tick, verdict } from "../style.js";
 
 /**
  * Tests run against the compiled output, where stdout is a pipe — so every
@@ -44,4 +44,11 @@ test("the verdict reads the same wherever it is shown", () => {
   assert.equal(verdict("pass", 0), "verdict: pass");
   assert.equal(verdict("fail", 2), "verdict: fail — 2 finding(s)");
   assert.equal(verdict("none", 0), "no verdict");
+});
+
+test("the banner is furniture: no colour, and it survives being piped", () => {
+  const rows = banner().split("\n").filter((row) => row.trim() !== "");
+  assert.equal(rows.length, 3);
+  assert.equal(new Set(rows.map((row) => row.length)).size, 1, "rows must be the same width");
+  assert.ok(rows[0] !== undefined && rows[0].length < 80, "must fit an 80-column terminal");
 });
