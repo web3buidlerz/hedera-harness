@@ -148,3 +148,62 @@ test("a warning that belongs to no attempt is still reported", async () => {
   const output = await renderStream(stream);
   assert.match(output, /interrupted — cleaning up/);
 });
+
+/**
+ * The run this describes is the one the whole mechanism exists to make visible:
+ * the evaluator answered pass, and a claim it declared itself did not hold.
+ */
+const OVERRIDDEN: HarnessEvent[] = [
+  ...RUN.slice(0, 3),
+  { type: "phase:started", phase: "evaluate", attempt: 1, detail: "blind" },
+  { type: "evaluate:finished", attempt: 1, verdict: "pass", findings: 0, costUsd: 0.2, durationMs: 1000 },
+  { type: "check:settled", id: "chain:blocks:blocks.0.number", state: "held", attempt: 1, detail: "found 40802567" },
+  { type: "check:settled", id: "chain:accounts/0.0.2:balance.balance", state: "failed", attempt: 1, detail: "expected at least 100, found 50" },
+  { type: "check:settled", id: "chain:accounts/0.0.9:balance.balance", state: "errored", attempt: 1, detail: "answered 404" },
+  {
+    type: "attempt:finished",
+    attempt: 1,
+    passed: false,
+    open: 0,
+    fixed: 0,
+    fresh: 1,
+    failures: [
+      { kind: "check", id: "aaaa1111bbbb", locator: "chain:accounts/0.0.2:balance.balance", detail: "expected at least 100, found 50" },
+    ],
+  },
+  {
+    type: "run:finished",
+    passed: false,
+    cancelled: false,
+    attempts: 1,
+    branch: "harness/x",
+    timings: { generateMs: 1, testMs: 1, evaluateMs: 1 },
+    dir: "/repo/.harness/runs/x",
+  },
+];
+
+test("a verdict the harness overrode says so, loudly", async () => {
+  const output = await renderStream(OVERRIDDEN);
+  assert.match(output, /the harness overrode this/);
+  assert.match(output, /verdict: pass/, "what the evaluator answered is still shown");
+  assert.match(output, /FAILED/, "and the run is what the harness decided");
+});
+
+test("held checks are counted, unreadable ones are named", async () => {
+  const output = await renderStream(OVERRIDDEN);
+  assert.match(output, /1 held · 1 failed · 1 unreadable/);
+  assert.match(output, /chain:accounts\/0\.0\.9.*answered 404/, "an unreadable check appears nowhere else");
+  assert.doesNotMatch(
+    output,
+    /chain:blocks:blocks\.0\.number/,
+    "a check that held needs no line of its own",
+  );
+});
+
+test("every failure says whether it was measured or judged", async () => {
+  const measured = await renderStream(OVERRIDDEN);
+  assert.match(measured, /measured\s+chain:accounts\/0\.0\.2/);
+
+  const judged = await renderRun();
+  assert.match(judged, /judged\s+\/status/);
+});

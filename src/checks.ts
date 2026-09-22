@@ -158,11 +158,21 @@ export async function baseline(mirrorNode: string, check: Check): Promise<Check>
 }
 
 /** Settles every check, reporting each as it lands. */
-export async function settleAll(mirrorNode: string, checks: Check[]): Promise<CheckResult[]> {
+export async function settleAll(
+  mirrorNode: string,
+  checks: Check[],
+  attempt: number,
+): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   for (const check of checks) {
     const result = await settle(mirrorNode, check);
-    emit({ type: "check:settled", id: result.check.id, state: result.state, detail: result.detail });
+    emit({
+      type: "check:settled",
+      id: result.check.id,
+      state: result.state,
+      detail: result.detail,
+      attempt,
+    });
     results.push(result);
   }
   return results;

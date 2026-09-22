@@ -151,6 +151,18 @@ async function section(
     );
   }
 
+  // The headline of the whole verification story: the evaluator answered pass,
+  // and a claim it declared itself did not hold. Nothing else in a run is worth
+  // seeing sooner.
+  const judged = evaluations[evaluations.length - 1];
+  if (judged?.verdict === "pass" && outcome !== undefined && !outcome.passed) {
+    console.log(
+      `  ${red("✗")} ${dim("the harness overrode this — a claim the evaluator made did not hold")}`,
+    );
+  }
+
+  settled(mine);
+
   // Anomalies the live output slides past. The one real occurrence — an
   // evaluator that ended its turn without answering — was invisible in a
   // summary that said "PASSED after 1 attempt".
@@ -165,11 +177,40 @@ async function section(
     );
     for (const failure of outcome.failures) {
       const again = earlier.has(failure.id) ? dim("  (still open)") : "";
-      console.log(`    ${describeFailure(failure)}${again}`);
+      // Two words, and only two: whether the harness looked, or the evaluator
+      // formed an opinion. A reader needs to know how certain a finding is.
+      const how = failure.kind === "verdict" ? "judged" : "measured";
+      console.log(`    ${dim(how.padEnd(8))} ${describeFailure(failure)}${again}`);
     }
   }
 
   await audit(dir, mine, attempt, full);
+}
+
+/**
+ * Claims the harness settled itself.
+ *
+ * The ones that held are a count, not a list — by the tenth run nobody rereads
+ * what was fine. What earns a line is a claim that could not be read at all:
+ * those are warnings rather than failures, so they appear nowhere else, and an
+ * unreadable check usually means the check was wrong rather than the app.
+ */
+function settled(mine: HarnessEvent[]): void {
+  const results = mine.filter((event) => event.type === "check:settled");
+  if (results.length === 0) return;
+
+  const counted = (state: string) => results.filter((event) => event.state === state).length;
+  const parts = [
+    `${counted("held")} held`,
+    ...(counted("failed") > 0 ? [`${counted("failed")} failed`] : []),
+    ...(counted("errored") > 0 ? [`${counted("errored")} unreadable`] : []),
+  ];
+  console.log(`  ${"checks".padEnd(9)} ${dim("      ")}  ${dim(parts.join(" · "))}`);
+
+  for (const event of results) {
+    if (event.state !== "errored") continue;
+    console.log(`    ${yellow("!")} ${dim(`${event.id} — ${event.detail}`)}`);
+  }
 }
 
 /**
