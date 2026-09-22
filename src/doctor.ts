@@ -6,6 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { type Command, runCommand } from "./commands.js";
 import { CONFIG_FILE, type HarnessConfig, readConfig, writeConfig } from "./config.js";
 import { emit } from "./events.js";
+import { funding, mirrorNode, wallet } from "./wallet.js";
 import { describeFailure, fromStage } from "./failure.js";
 import { commit, dirtyPaths } from "./git.js";
 import { type Proposal, resolveCommands } from "./resolve.js";
@@ -59,6 +60,7 @@ export async function doctor(options: DoctorOptions): Promise<HarnessConfig> {
 
   await checkSkills(repoRoot);
   await checkBrowser();
+  await checkWallet();
 
   const existing = await readConfig(repoRoot);
   const proposal = existing === null ? await resolve(options) : null;
@@ -140,6 +142,43 @@ function browserCache(): string {
   if (process.platform === "darwin") return join(homedir(), "Library", "Caches", "ms-playwright");
   if (process.platform === "win32") return join(homedir(), "AppData", "Local", "ms-playwright");
   return join(homedir(), ".cache", "ms-playwright");
+}
+
+/**
+ * The account the app will sign with, if one was given. Absent is fine — most
+ * specs are read-only — but an account that does not exist or cannot pay is a
+ * run that will fail confusingly much later, blaming the app for it.
+ */
+async function checkWallet(): Promise<void> {
+  const supplied = wallet();
+  if (supplied === null) {
+    emit({
+      type: "check",
+      name: "no wallet — the evaluator can read the chain but not sign",
+      ok: false,
+      remedy: "for transactional specs, export HEDERA_OPERATOR_ID and HEDERA_OPERATOR_KEY",
+    });
+    return;
+  }
+
+  const state = await funding(mirrorNode(), supplied.id);
+  if (state.state === "ok") {
+    emit({ type: "check", name: `wallet ${supplied.id} holds ${state.hbar.toFixed(2)} ℏ`, ok: true });
+    return;
+  }
+  if (state.state === "low") {
+    emit({
+      type: "check",
+      name: `wallet ${supplied.id} holds only ${state.hbar.toFixed(2)} ℏ`,
+      ok: false,
+      remedy: "top it up at portal.hedera.com/faucet",
+    });
+    return;
+  }
+  throw new DoctorError(
+    `the wallet HEDERA_OPERATOR_ID names cannot be read: ${state.reason}. ` +
+      `Check the id, or unset it to run without a wallet.`,
+  );
 }
 
 async function checkTooling(repoRoot: string): Promise<void> {
