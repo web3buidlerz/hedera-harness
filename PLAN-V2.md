@@ -348,9 +348,24 @@ A failed check's locator — `chain:accounts/0.0.4821:balance.balance` — is ex
 4. **`--judge-model`.** One flag, so who judges is a separate decision from who writes. Note what it cannot do: the agent is Claude Code and nothing else, so a judge off the generator's *family* is unreachable — opus judging sonnet is a different model on one training distribution, not an independent opinion. What it buys is a different judge and the ability to ask whether two of them agree about one app, which is evidence where there is none. It defaults to the generating model: changing who judges by default would quietly change what every run costs.
 5. **Derived checks at DOCTOR**, shown and not asked about; `--review` for anyone who wants the stop.
 6. **DOM checks.**
-7. **The signer.** Port v2's `chainSigner`: an ephemeral funded testnet account, persisted per run so repairs share it, topped up on reuse, swept back at the end, redacted from every artifact. Note the redaction problem is sharper here than in v2, which had only prompt files to clean: our JSONL transcripts record everything the agent did, so a key it echoes is captured permanently. DOCTOR gains a precondition on operator credentials and balance, because a missing key should cost four seconds rather than forty minutes.
+7. **A wallet the app can sign with.** Read `HEDERA_OPERATOR_ID` and `HEDERA_OPERATOR_KEY` from the environment, check the account on the mirror node at DOCTOR, and hand the key to the evaluator with instructions to sign with it — scrubbed from the transcript before it is written. That is the whole of it.
 
-The signer is last on confidence grounds and first on capability grounds — until it exists the judge can only assert about reads, and every transactional spec is out of reach. If the benchmark is the goal, it moves up.
+### Why the wallet is this small
+
+The first transactional run answered a question the plan had been guessing at. The evaluator did not fail for want of a wallet: it clicked Connect, the app **generated its own burner**, and the evaluator then went to `portal.hedera.com/faucet` in the browser and funded that address itself. It completed real transfers and found a real defect — a hardcoded gas limit Hedera rejects for a value transfer — with a transaction hash on the mirror node to prove it.
+
+Three things follow.
+
+**The hard problem was never getting a key in.** It was funding whatever address the app happens to invent, which is known only at runtime and needs a signed transfer. That is the provisioning machinery — and it exists only because the app generated a wallet we then had to chase. Make the provided account *be* the wallet and the step disappears: it is already funded, because a person funded it at the portal.
+
+So no ephemeral account, no top-up, no sweep, and **no SDK**. The harness needs the account *id*, to read a public balance over HTTP; it never needs the key for anything of its own. The property that the harness holds no key in its own logic survives almost intact.
+
+**Nothing may depend on the project being scaffolded.** Seeding the key through an environment variable the app reads at startup would keep it away from the agent entirely, and it was tempting. It also requires the app to support it, which contradicts the premise that this works on a repo that already exists. The key goes to the evaluator instead, and redaction is the price.
+
+**An evaluator that acquires resources is a boundary, not a feature.** It found a faucet and used it. That worked, and it is not something to depend on: it is slow — this run spent 23 minutes and all 120 turns, much of it on treasury management rather than judging — non-deterministic, and reliant on someone else's web page. The brief gains a line: judge the app with what it has; do not acquire funds, sign up for services, or obtain credentials. If the app cannot do something, that is a finding. The specific site matters less than the boundary.
+
+**The limit, stated rather than discovered.** This works wherever an app can accept a raw private key — a burner wallet, a dev-mode import, any "paste your key" path. It does not work where an app only supports a browser extension, because a headless browser has no extension. That is the app's limit and not the harness's, and belongs in the README. Where a project keeps its key somewhere unguessable, `harness.yaml` can carry a one-line hint, as v2 did with `browserLocalStorageKey` defaulting to `burnerWallet.pk` — configuration, not machinery, and only when a real project needs it.
+
 
 ### Rejected
 
