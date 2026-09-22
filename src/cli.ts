@@ -17,7 +17,8 @@ import { renderToTerminal } from "./render/terminal.js";
 import { red } from "./style.js";
 
 const USAGE = `usage: harness init [name] [--model NAME] [--yes]
-       harness run --spec <path> [--max-attempts N] [--model NAME] [--yes] [--json]
+       harness run --spec <path> [--max-attempts N] [--model NAME]
+                          [--judge-model NAME] [--yes] [--json]
        harness report [run] [--full]
 
 Run from inside the target repository.
@@ -31,6 +32,7 @@ Run from inside the target repository.
   --spec <path>        the feature to build
   --max-attempts N    repair attempts before giving up (default 3)
   --model NAME        agent model: sonnet (default), opus, haiku, or a full id
+  --judge-model NAME  model for EVALUATE only (default: the same as --model)
   --yes               skip the first-run command confirmation
   --json              one JSON object per line instead of the watchable output
   --full              report: include both agents' full tool feeds`;
@@ -112,6 +114,7 @@ interface Options {
   spec: string;
   maxAttempts: number;
   model: string;
+  judgeModel: string;
   assumeYes: boolean;
   json: boolean;
   full: boolean;
@@ -119,6 +122,23 @@ interface Options {
 
 /** Pinned rather than inherited, so a run does not change meaning when the CLI's default moves. */
 const DEFAULT_MODEL = process.env["HARNESS_MODEL"] ?? "sonnet";
+
+/**
+ * Who judges, when it should not be whoever generated.
+ *
+ * Judges are documented to over-reward their own model family, and this harness
+ * runs one model for both halves — which is the shape a run of first-attempt
+ * passes would take if leniency were the cause. A different family is not
+ * reachable here: the agent is Claude Code and nothing else, so opus judging
+ * sonnet is a different model on the same training distribution, not an
+ * independent opinion. What this buys is a stronger or simply different judge,
+ * and the ability to ask whether two of them agree — which is evidence where
+ * there is currently none.
+ *
+ * Defaults to the generating model, because changing who judges by default
+ * would quietly change what every run costs.
+ */
+const DEFAULT_JUDGE = process.env["HARNESS_JUDGE_MODEL"];
 
 function parse(argv: string[]): Options {
   const [command, ...rest] = argv;
@@ -137,6 +157,7 @@ function parse(argv: string[]): Options {
         spec: { type: "string" },
         "max-attempts": { type: "string", default: "3" },
         model: { type: "string", default: DEFAULT_MODEL },
+        "judge-model": { type: "string", ...(DEFAULT_JUDGE === undefined ? {} : { default: DEFAULT_JUDGE }) },
         yes: { type: "boolean", default: false },
         json: { type: "boolean", default: false },
         full: { type: "boolean", default: false },
@@ -162,6 +183,7 @@ function parse(argv: string[]): Options {
     spec: values.spec === undefined ? "" : resolve(values.spec),
     maxAttempts,
     model: values.model,
+    judgeModel: values["judge-model"] ?? values.model,
     assumeYes: values.yes,
     json: values.json,
     full: values.full,
@@ -263,6 +285,7 @@ async function main(argv: string[]): Promise<number> {
       branch,
       maxAttempts: options.maxAttempts,
       model: options.model,
+      judgeModel: options.judgeModel,
       specInRepo,
     });
   } finally {

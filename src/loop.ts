@@ -22,6 +22,8 @@ export interface LoopOptions {
   branch: string;
   maxAttempts: number;
   model: string;
+  /** Who judges. The same as `model` unless asked otherwise. */
+  judgeModel: string;
   /** Repo-relative spec path, when it lives in the repo. Never committed as work. */
   specInRepo?: string | undefined;
   /**
@@ -161,7 +163,14 @@ async function assess(options: LoopOptions, attempt: number, timings: Timings): 
   const evaluateStarted = Date.now();
   try {
     return verdictFeedback(
-      await judge({ repoRoot, run, specPath: options.specPath, attempt, appUrl: server.url, model: options.model }),
+      await judge({
+        repoRoot,
+        run,
+        specPath: options.specPath,
+        attempt,
+        appUrl: server.url,
+        model: options.judgeModel,
+      }),
     );
   } finally {
     timings.evaluateMs += Date.now() - evaluateStarted;

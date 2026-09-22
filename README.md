@@ -86,6 +86,7 @@ harness report [run]        read a finished run (default: the latest)
 
   --max-attempts N          repair attempts before giving up (default 3)
   --model NAME              sonnet (default), opus, haiku, or a full model id
+  --judge-model NAME        model for EVALUATE only (default: the same as --model)
   --yes                     skip the first-run command confirmation
   --json                    one JSON object per line, for CI
   --full                    report: include both agents' tool feeds
@@ -182,6 +183,7 @@ Machine-level settings are environment variables, deliberately kept out of `harn
 | | |
 |---|---|
 | `HARNESS_MODEL` | Default agent model. Same as `--model`. |
+| `HARNESS_JUDGE_MODEL` | Default model for EVALUATE. Same as `--judge-model`. |
 | `HEDERA_SKILLS_DIR` | Extra skill plugins, for a project that ships none of its own. Unset by default — a scaffolded project carries its skills in `.claude/skills/` and they load automatically. |
 | `HEDERA_NETWORK` | `testnet` (default), `previewnet`, `mainnet`. |
 | `HEDERA_MIRROR_NODE` | Overrides the mirror node URL derived from the network. |
