@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { type Check, type CheckResult, baseline, locate, settleAll } from "./checks.js";
 import { emit } from "./events.js";
 import { describeMessage, endingOf } from "./messages.js";
 import type { Run } from "./run.js";
@@ -27,6 +28,7 @@ const MAX_TURNS = 120;
 const MAX_BUDGET_USD = 5;
 
 const TOOL = "submit_verdict";
+const DECLARE = "declare_check";
 const HARNESS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export class EvaluateError extends Error {
@@ -53,7 +55,7 @@ export interface Verdict {
  * means exactly the three cases below and earns one retry.
  */
 export type Outcome =
-  | { type: "verdict"; verdict: Verdict }
+  | { type: "verdict"; verdict: Verdict; checks: CheckResult[] }
   | { type: "no-verdict"; reason: string; why: Unanswered };
 
 /**
@@ -125,8 +127,9 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
   await mkdir(join(workspace, "evidence"));
   await cp(options.specPath, join(workspace, "spec.md"));
 
-  const captured: Captured = { verdict: null, malformed: null };
-  const server = verdictServer(captured);
+  const captured: Captured = { verdict: null, malformed: null, checks: [] };
+  const chain = hedera();
+  const server = verdictServer(captured, chain.mirrorNode);
   const transcript = await run.path(`attempt-${attempt}`, "evaluate.jsonl");
 
   emit({
@@ -185,24 +188,64 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
     }
   }
 
+  // Every declared claim is settled before the verdict is accepted, and a
+  // failing one turns a pass into a fail. Mechanical rejection beats an LLM
+  // approval, never the reverse: a judge that passed over its own failed check
+  // has contradicted itself, which is the strongest reason there is to reject.
+  // An unreadable check is a warning — the mechanical layer must never
+  // manufacture failures out of its own bugs.
+  const settled = await settleAll(chain.mirrorNode, captured.checks);
+  await writeFile(
+    await run.path(`attempt-${attempt}`, "checks.json"),
+    `${JSON.stringify(settled, null, 2)}\n`,
+  );
+  // What the judge said, recorded before the harness has its say. Overwriting it
+  // with the overridden result would make the one thing this feature exists to
+  // expose — the harness disagreeing with the judge — invisible afterwards.
+  if (outcome.type === "verdict") {
+    await writeFile(
+      await run.path(`attempt-${attempt}`, "verdict.json"),
+      `${JSON.stringify({ ...outcome.verdict, judgedBy: options.model }, null, 2)}\n`,
+    );
+  }
+  outcome = override(outcome, settled);
+
   // Evidence is collected whatever the outcome — a run that produced no verdict
   // is exactly when you want to see what the evaluator was looking at.
   await cp(join(workspace, "evidence"), await run.path(`attempt-${attempt}`, "evidence"), {
     recursive: true,
   });
 
-  if (outcome.type === "verdict") {
-    await writeFile(
-      await run.path(`attempt-${attempt}`, "verdict.json"),
-      `${JSON.stringify(outcome.verdict, null, 2)}\n`,
-    );
-  }
   return outcome;
+}
+
+/**
+ * Mechanical rejection beats an LLM approval, never the reverse.
+ *
+ * A judge that passed over a claim it declared and the harness found untrue has
+ * contradicted itself, which is the strongest reason there is to reject. The
+ * asymmetry matters as much as the rule: a check that held never rescues a
+ * failed verdict, because the judge saw things no check was written for.
+ *
+ * `errored` is not `failed`. A path that 404s or a field that is absent is the
+ * check being wrong, not the app — and a mechanical layer that manufactures
+ * failures out of its own bugs stops being the thing worth trusting.
+ */
+export function override(outcome: Outcome, settled: CheckResult[]): Outcome {
+  if (outcome.type !== "verdict") return outcome;
+  const untrue = settled.some((result) => result.state === "failed");
+  return {
+    type: "verdict",
+    verdict: { ...outcome.verdict, pass: outcome.verdict.pass && !untrue },
+    checks: settled,
+  };
 }
 
 interface Captured {
   verdict: Verdict | null;
   malformed: string | null;
+  /** Claims the evaluator asked the harness to settle, in declaration order. */
+  checks: Check[];
 }
 
 /**
@@ -302,10 +345,60 @@ async function pass(
   return { outcome, sessionId };
 }
 
-function verdictServer(captured: Captured): ReturnType<typeof createSdkMcpServer> {
+function verdictServer(
+  captured: Captured,
+  mirrorNode: string,
+): ReturnType<typeof createSdkMcpServer> {
   return createSdkMcpServer({
     name: "harness",
     tools: [
+      tool(
+        DECLARE,
+        "State a claim about chain state that the harness will check itself. Declare it " +
+          "BEFORE the action that should make it true — a change can only be measured " +
+          "against a value recorded beforehand.",
+        {
+          path: z
+            .string()
+            .min(1)
+            .describe("Mirror node path below /api/v1/, e.g. `accounts/0.0.2`"),
+          field: z
+            .string()
+            .min(1)
+            .describe("Dotted path into the response, e.g. `balance.balance`. Units are the mirror node's."),
+          expect: z
+            .object({
+              equals: z.union([z.string(), z.number()]).optional(),
+              matches: z.string().optional(),
+              contains: z.string().optional(),
+              atLeast: z.number().optional(),
+              changedBy: z.number().optional(),
+              increasedBy: z.number().optional(),
+            })
+            .describe("Exactly one of these."),
+        },
+        async (args) => {
+          const expect = Object.fromEntries(
+            Object.entries(args.expect).filter(([, value]) => value !== undefined),
+          );
+          if (Object.keys(expect).length !== 1) {
+            return { content: [{ type: "text", text: "Give exactly one expectation." }] };
+          }
+          const check = await baseline(mirrorNode, {
+            id: locate(args.path, args.field),
+            kind: "chain",
+            path: args.path,
+            field: args.field,
+            expect: expect as Check["expect"],
+          });
+          captured.checks.push(check);
+          return {
+            content: [
+              { type: "text", text: `Recorded. The harness will settle ${check.id} itself.` },
+            ],
+          };
+        },
+      ),
       tool(
         TOOL,
         "Report whether the running app satisfies the spec. Call this exactly once, at the end.",
@@ -414,7 +507,7 @@ function adjudicate(
       why: "unevidenced",
     };
   }
-  return { type: "verdict", verdict: captured.verdict };
+  return { type: "verdict", verdict: captured.verdict, checks: [] };
 }
 
 /**
@@ -476,6 +569,11 @@ function brief(appUrl: string, chain: Hedera): string {
     "- drive the browser with `playwright-cli` through Bash (see the playwright-cli skill)",
     "- check any on-chain effect by reading the mirror node over HTTP; it is public,",
     "  and you have no keys and need none",
+    `- for anything on chain, also call ${DECLARE} so the harness reads it too. Declare`,
+    "  the claim **before** the action that should make it true: a change can only be",
+    "  measured against a value recorded beforehand. The harness settles these itself",
+    "  and does not ask you whether they held, so a claim you are unsure of is worth",
+    "  declaring — it is checked, not taken on trust",
     "- save a screenshot, page snapshot or saved response into `evidence/` **as you go**,",
     "  so every finding can be checked afterwards",
     "",

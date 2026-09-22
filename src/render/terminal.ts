@@ -111,6 +111,14 @@ export function renderToTerminal(): () => void {
         console.log(`  ${dim(elapsed())}  ${verdict(event.verdict, event.findings)}`);
         return;
 
+      case "check:settled": {
+        // A settled claim reads as a check because that is what it is: the
+        // harness looked, rather than the evaluator saying so.
+        const mark = event.state === "held" ? tick("") : event.state === "failed" ? red("✗") : warn("");
+        console.log(`  ${mark.trim()} ${dim(`${event.id} — ${event.detail}`)}`);
+        return;
+      }
+
       case "committed":
         console.log(
           dim(
