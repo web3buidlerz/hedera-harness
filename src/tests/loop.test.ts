@@ -90,6 +90,7 @@ async function drive(verdicts: Outcome[], maxAttempts = 3): Promise<Driven> {
     branch: "harness/stamp",
     maxAttempts,
     model: "stub",
+    judgeModel: "stub-judge",
     agents,
   });
 
@@ -192,4 +193,55 @@ test("the last attempt does not announce a next one", async () => {
   const notes = driven.events.filter((event) => event.type === "note");
 
   assert.deepEqual(notes, [], "a run that has spent its attempts has nothing left to say");
+});
+
+/**
+ * Who judges is a separate decision from who writes, because a judge that
+ * shares a model with the generator is the documented shape of a lenient pass.
+ * A different family is not reachable while the agent is Claude Code and
+ * nothing else, so this buys a different judge rather than an independent one —
+ * but it is the difference between an experiment and a worry.
+ */
+test("the judge is asked with its own model", async () => {
+  const seen: string[] = [];
+  const repo = await mkdtemp(join(tmpdir(), "harness-judge-"));
+  await runCommand(
+    { run: "git init -q -b main && git config user.email t@t && git config user.name t" },
+    repo,
+    10_000,
+  );
+  await writeFile(join(repo, "package.json"), '{"name":"x","private":true}\n');
+  await writeFile(join(repo, "spec.md"), "# Spec\n");
+  await runCommand({ run: "git add -A && git commit -qm init" }, repo, 10_000);
+  const run = await Run.create(repo, "stamp");
+
+  await runLoop({
+    config: {
+      install: { run: "true" },
+      build: { run: "true" },
+      test: { run: "true" },
+      serve: { run: `echo "http://127.0.0.1:8797" && python3 -m http.server 8797` },
+    },
+    repoRoot: repo,
+    run,
+    specPath: join(repo, "spec.md"),
+    spec: "# Spec",
+    branch: "harness/stamp",
+    maxAttempts: 1,
+    model: "the-writer",
+    judgeModel: "the-judge",
+    agents: {
+      generate: (async (options) => {
+        seen.push(`generate:${options.model}`);
+        await writeFile(join(repo, "work.txt"), "x\n");
+        return { sessionId: "s", skills: [], turns: 1, costUsd: 0, durationMs: 1 };
+      }) as Agents["generate"],
+      evaluate: (async (options) => {
+        seen.push(`evaluate:${options.model}`);
+        return PASSES;
+      }) as Agents["evaluate"],
+    },
+  });
+
+  assert.deepEqual(seen, ["generate:the-writer", "evaluate:the-judge"]);
 });
