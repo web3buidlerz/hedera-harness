@@ -7,6 +7,7 @@ import { createSdkMcpServer, query, tool } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import { type Check, type CheckResult, baseline, locate, settleAll } from "./checks.js";
 import { emit } from "./events.js";
+import { type Wallet, mirrorNode, network, redact, wallet } from "./wallet.js";
 import { describeMessage, endingOf } from "./messages.js";
 import type { Run } from "./run.js";
 
@@ -260,6 +261,7 @@ async function pass(
   turn: { prompt: string; captured: Captured; resume?: string | undefined },
 ): Promise<{ outcome: Outcome; sessionId: string | undefined }> {
   const { repoRoot, attempt } = options;
+  const signer = wallet();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WALL_CLOCK_MS);
   const startedAt = Date.now();
@@ -296,7 +298,11 @@ async function pass(
     });
 
     for await (const message of conversation) {
-      await appendFile(transcript, `${JSON.stringify(message)}\n`);
+      // The key is in this agent's context, so it is in anything it echoes. The
+      // transcript records every message either way, which makes it the one
+      // artifact a live key must never survive in — so the scrub happens at the
+      // write, not at the agent's discretion.
+      await appendFile(transcript, `${redact(JSON.stringify(message), signer?.key)}\n`);
       const step = describeMessage(message);
       if (step !== null) {
         emit({ type: "tool", tool: step.tool, argument: step.argument, phase: "evaluate", attempt });
@@ -538,19 +544,13 @@ function resolves(evidence: string, workspace: string): boolean {
 interface Hedera {
   network: string;
   mirrorNode: string;
-  accounts: string[];
+  /** The account the app can sign with, when the run was given one. */
+  signer: Wallet | null;
 }
 
 /** Mirror node reads are public, so the evaluator is told where to look and never a key. */
 function hedera(): Hedera {
-  const network = process.env["HEDERA_NETWORK"] ?? "testnet";
-  const mirrorNode =
-    process.env["HEDERA_MIRROR_NODE"] ??
-    (network === "mainnet"
-      ? "https://mainnet-public.mirrornode.hedera.com"
-      : `https://${network}.mirrornode.hedera.com`);
-  const operator = process.env["HEDERA_OPERATOR_ID"];
-  return { network, mirrorNode, accounts: operator === undefined ? [] : [operator] };
+  return { network: network(), mirrorNode: mirrorNode(), signer: wallet() };
 }
 
 function brief(appUrl: string, chain: Hedera): string {
@@ -559,9 +559,28 @@ function brief(appUrl: string, chain: Hedera): string {
     "",
     `The app is running at ${appUrl}.`,
     `It is built on Hedera ${chain.network}; the public mirror node is ${chain.mirrorNode}.`,
-    chain.accounts.length > 0
-      ? `Transactions it makes come from account ${chain.accounts.join(", ")}.`
-      : "",
+    ...(chain.signer === null
+      ? [
+          "",
+          "You have no wallet. Anything needing a signature cannot be completed, and",
+          "saying so is a finding — do not go looking for one.",
+        ]
+      : [
+          "",
+          `You have a funded ${chain.network} account to sign with:`,
+          `  account   ${chain.signer.id}`,
+          `  key       ${chain.signer.key}`,
+          "",
+          "Import it into the app rather than letting the app generate its own wallet,",
+          "which would have no funds. How depends on the app: a burner wallet usually",
+          "reads its key from browser storage — scaffolded Hedera apps use the",
+          "localStorage entry `burnerWallet.pk` — and some apps offer an import field.",
+          "Set it before connecting. If the app only supports a browser extension there",
+          "is no way in, and that is a finding rather than something to work around.",
+        ]),
+    "",
+    "Judge the app with what it has. Do not acquire funds, sign up for services, or",
+    "obtain credentials — if the app cannot do something, that is what you report.",
     "",
     "Read spec.md, which is the only file here. Decide what a user should be able",
     "to do if the spec were satisfied, then try it against the running app:",

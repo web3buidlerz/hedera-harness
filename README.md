@@ -185,14 +185,15 @@ Machine-level settings are environment variables, deliberately kept out of `harn
 | `HEDERA_SKILLS_DIR` | Extra skill plugins, for a project that ships none of its own. Unset by default — a scaffolded project carries its skills in `.claude/skills/` and they load automatically. |
 | `HEDERA_NETWORK` | `testnet` (default), `previewnet`, `mainnet`. |
 | `HEDERA_MIRROR_NODE` | Overrides the mirror node URL derived from the network. |
-| `HEDERA_OPERATOR_ID` | Account the evaluator is told to inspect on chain. Never a key. |
+| `HEDERA_OPERATOR_ID` | A funded testnet account the app can sign with. DOCTOR checks it exists and has a balance. |
+| `HEDERA_OPERATOR_KEY` | Its private key. Passed to the evaluator to import into the app, and scrubbed from every artifact. The harness never signs with it. |
 | `NO_COLOR` | Turns off colour. Already off when stdout is not a terminal, so piping or redirecting needs nothing. |
 
 Every stage is bounded: 60 minutes for generation, 20 for evaluation, 20 per command, 2 minutes for the dev server to answer.
 
 ## What it does not do yet
 
-- **No signer.** The evaluator reads chain state but cannot sign, so anything behind a wallet is judged on what the UI offers rather than by completing the transaction.
+- **Transactions need a wallet you supply, and an app that accepts one.** Export `HEDERA_OPERATOR_ID` and `HEDERA_OPERATOR_KEY` for a funded testnet account, and the evaluator imports it into the app — most often through a burner wallet's browser storage. Where an app only supports a browser extension there is no way in, because a headless browser has no extension, and the evaluator reports that rather than working around it. The harness creates no accounts and transfers nothing.
 - **One spec at a time.** No sequencing of multiple specs into a larger feature.
 - **Claude only.** No provider abstraction.
 - **It does not scaffold projects.** Use `create-scaffold-hbar`; the harness works on a repo that already exists.
