@@ -153,6 +153,15 @@ export function renderToTerminal(): () => void {
         console.log("");
         return;
 
+      case "derived": {
+        console.log(`\n  ${dim("I will also verify, from this spec:")}`);
+        for (const check of event.checks) {
+          const source = check.because === undefined ? "" : dim(`  — "${clip(check.because)}"`);
+          console.log(`    ${check.id}${source}`);
+        }
+        return;
+      }
+
       case "branch":
         console.log(dim(`\nworking on ${event.branch}`));
         return;

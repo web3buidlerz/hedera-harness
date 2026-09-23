@@ -74,6 +74,8 @@ export type Unanswered =
 
 export interface EvaluateOptions {
   repoRoot: string;
+  /** Read from the spec at DOCTOR, before the app existed. Settled alongside the judge's own. */
+  checks: Check[];
   run: Run;
   specPath: string;
   attempt: number;
@@ -195,7 +197,11 @@ export async function evaluate(options: EvaluateOptions): Promise<Outcome> {
   // has contradicted itself, which is the strongest reason there is to reject.
   // An unreadable check is a warning — the mechanical layer must never
   // manufacture failures out of its own bugs.
-  const settled = await settleAll(chain.mirrorNode, captured.checks, attempt);
+  const settled = await settleAll(
+    { mirrorNode: chain.mirrorNode, appUrl },
+    [...options.checks, ...captured.checks],
+    attempt,
+  );
   await writeFile(
     await run.path(`attempt-${attempt}`, "checks.json"),
     `${JSON.stringify(settled, null, 2)}\n`,
@@ -391,7 +397,7 @@ function verdictServer(
             return { content: [{ type: "text", text: "Give exactly one expectation." }] };
           }
           const check = await baseline(mirrorNode, {
-            id: locate(args.path, args.field),
+            id: locate("chain", args.path, args.field, expect as Check["expect"]),
             kind: "chain",
             path: args.path,
             field: args.field,

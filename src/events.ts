@@ -90,6 +90,8 @@ export type HarnessEvent =
       failures: AttemptFailure[];
     }
   | { type: "branch"; branch: string }
+  /** What DOCTOR read out of the spec, before the app existed. */
+  | { type: "derived"; checks: Array<{ id: string; because?: string | undefined }> }
   /** DOCTOR's proposed commands, before the operator confirms them. */
   | {
       type: "proposal";

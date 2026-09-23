@@ -1,6 +1,7 @@
 import { join, relative } from "node:path";
 import { writeFile } from "node:fs/promises";
 import type { HarnessConfig } from "./config.js";
+import type { Check } from "./checks.js";
 import { type Outcome, cited, evaluate } from "./evaluate.js";
 import { generate } from "./generate.js";
 import { commitWork } from "./git.js";
@@ -24,6 +25,8 @@ export interface LoopOptions {
   model: string;
   /** Who judges. The same as `model` unless asked otherwise. */
   judgeModel: string;
+  /** Read from the spec at DOCTOR, pinned for the run, settled every attempt. */
+  checks: Check[];
   /** Repo-relative spec path, when it lives in the repo. Never committed as work. */
   specInRepo?: string | undefined;
   /**
@@ -166,6 +169,7 @@ async function assess(options: LoopOptions, attempt: number, timings: Timings): 
       await judge({
         repoRoot,
         run,
+        checks: options.checks,
         specPath: options.specPath,
         attempt,
         appUrl: server.url,

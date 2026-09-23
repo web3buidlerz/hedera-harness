@@ -40,7 +40,7 @@ export type Expectation =
 export interface Check {
   /** `chain:accounts/0.0.2:balance.balance` — the same shape failure identity hashes. */
   id: string;
-  kind: "chain";
+  kind: "chain" | "http";
   /** Mirror node path below `/api/v1/`, e.g. `accounts/0.0.2`. */
   path: string;
   /** Dotted path into the response, e.g. `balance.balance`. Values are in the units the mirror node reports. */
@@ -48,6 +48,12 @@ export interface Check {
   expect: Expectation;
   /** The value when this was declared, for the delta expectations. */
   baseline?: number | undefined;
+  /**
+   * The words this came from, when it was read out of a spec rather than
+   * declared by someone who used the app. A check that misreads prose fails a
+   * correct app, so a reader has to be able to see the reading.
+   */
+  because?: string | undefined;
 }
 
 /**
@@ -63,8 +69,43 @@ export interface CheckResult {
   detail: string;
 }
 
-export function locate(path: string, field: string): string {
-  return `chain:${path}:${field}`;
+/**
+ * What a check is, in one line, uniquely.
+ *
+ * The expectation is part of it. Two claims about one field are two claims —
+ * "the body contains the network name" and "the body contains the block
+ * number" read the same route and the same field, and collapsing them to one
+ * locator would give them one identity, so the convergence tally would see a
+ * fixed check and a broken one as the same thing.
+ */
+export function locate(
+  kind: "chain" | "http",
+  path: string,
+  field: string,
+  expect: Expectation,
+): string {
+  const [how, what] = Object.entries(expect)[0] ?? ["", ""];
+  return `${kind}:${path}:${field}:${how}=${String(what).slice(0, 40)}`;
+}
+
+/** Where a check goes looking: the chain for one kind, the running app for the other. */
+export interface Where {
+  mirrorNode: string;
+  appUrl: string;
+}
+
+/** Reads `field` out of the app's own answer for a route: `status`, or `body`. */
+export async function reach(
+  appUrl: string,
+  route: string,
+  field: string,
+): Promise<{ value: unknown } | { error: string }> {
+  const url = `${appUrl.replace(/\/$/, "")}/${route.replace(/^\//, "")}`;
+  const response = await fetch(url).catch((error: Error) => error);
+  if (response instanceof Error) return { error: `${url} could not be reached: ${response.message}` };
+  if (field === "status") return { value: response.status };
+  if (field !== "body") return { error: `an http check reads \`status\` or \`body\`, not \`${field}\`` };
+  return { value: await response.text().catch(() => "") };
 }
 
 /** Reads `field` out of the mirror node's answer for `path`. */
@@ -93,10 +134,13 @@ export async function read(
  * claim made the instant after a transaction can be true and not yet visible;
  * an unreadable path is not retried, because that is not going to change.
  */
-export async function settle(mirrorNode: string, check: Check): Promise<CheckResult> {
+export async function settle(where: Where, check: Check): Promise<CheckResult> {
   let last: CheckResult | null = null;
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
-    const found = await read(mirrorNode, check.path, check.field);
+    const found =
+      check.kind === "http"
+        ? await reach(where.appUrl, check.path, check.field)
+        : await read(where.mirrorNode, check.path, check.field);
     if ("error" in found) return { check, state: "errored", detail: found.error };
 
     last = compare(check, found.value);
@@ -106,8 +150,12 @@ export async function settle(mirrorNode: string, check: Check): Promise<CheckRes
   return last ?? { check, state: "errored", detail: "no reading was taken" };
 }
 
+/** A whole HTML page is the wrong answer to "what was there". */
+const SHOWN = 120;
+
 function compare(check: Check, value: unknown): CheckResult {
-  const found = `found ${JSON.stringify(value)}`;
+  const seen = JSON.stringify(value) ?? "";
+  const found = `found ${seen.length <= SHOWN ? seen : `${seen.slice(0, SHOWN - 1)}…`}`;
   const held = (state: boolean, expected: string): CheckResult => ({
     check,
     state: state ? "held" : "failed",
@@ -151,6 +199,7 @@ function compare(check: Check, value: unknown): CheckResult {
  */
 export async function baseline(mirrorNode: string, check: Check): Promise<Check> {
   if (!("changedBy" in check.expect) && !("increasedBy" in check.expect)) return check;
+  if (check.kind !== "chain") return check;
   const found = await read(mirrorNode, check.path, check.field);
   if ("error" in found) return check;
   const numeric = Number(found.value);
@@ -159,13 +208,13 @@ export async function baseline(mirrorNode: string, check: Check): Promise<Check>
 
 /** Settles every check, reporting each as it lands. */
 export async function settleAll(
-  mirrorNode: string,
+  where: Where,
   checks: Check[],
   attempt: number,
 ): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   for (const check of checks) {
-    const result = await settle(mirrorNode, check);
+    const result = await settle(where, check);
     emit({
       type: "check:settled",
       id: result.check.id,
