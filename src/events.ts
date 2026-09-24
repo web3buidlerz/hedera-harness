@@ -74,6 +74,7 @@ export type HarnessEvent =
   | {
       type: "check:settled";
       id: string;
+      source: "declared" | "derived";
       state: "held" | "failed" | "errored";
       detail: string;
       attempt: number;

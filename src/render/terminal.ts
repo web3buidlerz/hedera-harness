@@ -114,7 +114,10 @@ export function renderToTerminal(): () => void {
       case "check:settled": {
         // A settled claim reads as a check because that is what it is: the
         // harness looked, rather than the evaluator saying so.
-        const mark = event.state === "held" ? tick("") : event.state === "failed" ? red("✗") : warn("");
+        // A derived check that fails did not fail the run, so it does not get
+        // the mark that means it did.
+        const failed = event.state === "failed" && event.source === "declared";
+        const mark = event.state === "held" ? tick("") : failed ? red("✗") : warn("");
         console.log(`  ${mark.trim()} ${dim(`${event.id} — ${event.detail}`)}`);
         return;
       }

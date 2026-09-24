@@ -24,6 +24,7 @@ async function serving(body: unknown, status = 200): Promise<{ base: string; sto
 function claim(expect: Check["expect"], over: Partial<Check> = {}): Check {
   return {
     id: locate("chain", "accounts/0.0.2", "balance.balance", expect),
+    source: "declared",
     kind: "chain",
     path: "accounts/0.0.2",
     field: "balance.balance",
@@ -204,6 +205,29 @@ test("a failed check turns a pass into a fail, and never the reverse", () => {
   );
 });
 
+test("a check read out of the spec reports, and never overrides", () => {
+  const passing: Outcome = { type: "verdict", verdict: { pass: true, failures: [] }, checks: [] };
+  const read = { check: claim({ atLeast: 100 }, { source: "derived" }), state: "failed" as const, detail: "found 50" };
+  const after = override(passing, [read]);
+  assert.equal(passed(after), true);
+  assert.equal(after.type === "verdict" && after.checks.length, 1, "but it is still reported");
+});
+
+test("a pattern that will not parse is unreadable, not a failure", async () => {
+  const mirror = await serving({ balance: { balance: 500 } });
+  try {
+    // `(?i)` is ordinary elsewhere and meaningless to `new RegExp`; the deriver
+    // wrote exactly this against a real spec.
+    const result = await settle(
+      { mirrorNode: mirror.base, appUrl: mirror.base },
+      claim({ matches: "(?i)not.?found" }),
+    );
+    assert.equal(result.state, "errored");
+  } finally {
+    mirror.stop();
+  }
+});
+
 test("no verdict is left alone — there is nothing to override", () => {
   const none: Outcome = { type: "no-verdict", reason: "stopped", why: "cut-off" };
   assert.deepEqual(override(none, []), none);
@@ -223,6 +247,7 @@ test("an http check reads the app's own answer", async () => {
   const where = { mirrorNode: app.base, appUrl: app.base };
   const route = (field: string, expect: Check["expect"]): Check => ({
     id: locate("http", "/status", field, expect),
+    source: "declared",
     kind: "http",
     path: "/status",
     field,
@@ -246,6 +271,7 @@ test("an app that is not answering errors rather than failing", async () => {
   const where = { mirrorNode: "http://127.0.0.1:1", appUrl: "http://127.0.0.1:1" };
   const check: Check = {
     id: locate("http", "/status", "status", { equals: 200 }),
+    source: "declared",
     kind: "http",
     path: "/status",
     field: "status",
@@ -259,6 +285,7 @@ test("what was found is quoted, not archived", async () => {
   try {
     const check: Check = {
       id: locate("http", "/", "body", { contains: "nope" }),
+      source: "declared",
       kind: "http",
       path: "/",
       field: "body",

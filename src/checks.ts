@@ -40,6 +40,15 @@ export type Expectation =
 export interface Check {
   /** `chain:accounts/0.0.2:balance.balance` — the same shape failure identity hashes. */
   id: string;
+  /**
+   * Who made this claim, which decides what it can do. `declared` comes from
+   * the evaluator, about something it watched happen: if that fails, the judge
+   * has contradicted itself, and nothing is a better reason to reject the run.
+   * `derived` is a reading of prose written before the app existed — when it
+   * disagrees with the app, either of the two could be wrong and nothing here
+   * can say which, so it is reported and never overrides.
+   */
+  source: "declared" | "derived";
   kind: "chain" | "http";
   /** Mirror node path below `/api/v1/`, e.g. `accounts/0.0.2`. */
   path: string;
@@ -164,7 +173,17 @@ function compare(check: Check, value: unknown): CheckResult {
   const expect = check.expect;
 
   if ("matches" in expect) {
-    return held(new RegExp(expect.matches).test(String(value)), `to match ${expect.matches}`);
+    // A pattern that will not parse is the check being wrong, not the app. The
+    // deriver wrote `(?i)not.?found` for a real spec — ordinary in most
+    // languages, not a thing in JavaScript — and an uncaught throw here would
+    // take the whole run with it.
+    let pattern: RegExp;
+    try {
+      pattern = new RegExp(expect.matches);
+    } catch (error) {
+      return { check, state: "errored", detail: `unusable pattern: ${(error as Error).message}` };
+    }
+    return held(pattern.test(String(value)), `to match ${expect.matches}`);
   }
   if ("contains" in expect) {
     return held(String(value).includes(expect.contains), `to contain ${expect.contains}`);
@@ -218,6 +237,7 @@ export async function settleAll(
     emit({
       type: "check:settled",
       id: result.check.id,
+      source: result.check.source,
       state: result.state,
       detail: result.detail,
       attempt,

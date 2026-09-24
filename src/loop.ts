@@ -197,7 +197,9 @@ function verdictFeedback(outcome: Outcome): Feedback {
   // A claim the harness settled and found untrue is a reason the attempt did
   // not pass, exactly like one the judge formed. It reaches the repair prompt
   // and the open/fixed/new tally by the same route.
-  const measured = outcome.checks.filter((result) => result.state === "failed").map(fromCheck);
+  const measured = outcome.checks
+    .filter((result) => result.state === "failed" && result.check.source === "declared")
+    .map(fromCheck);
   return { ok: false, failures: [...measured, ...fromVerdict(outcome.verdict)] };
 }
 

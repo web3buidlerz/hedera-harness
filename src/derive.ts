@@ -84,6 +84,7 @@ export async function derive(spec: string, appUrlHint: string, model: string): P
             if (Object.keys(expect).length !== 1) continue;
             found.push({
               id: locate(proposed.kind, proposed.path, proposed.field, expect as Check["expect"]),
+              source: "derived",
               kind: proposed.kind,
               path: proposed.path,
               field: proposed.field,
@@ -151,6 +152,14 @@ function brief(spec: string, appUrl: string): string {
     "- **Nothing that depends on what the run creates.** You cannot name an account",
     "  the app will make, a contract it will deploy, or a transaction it will send;",
     "  none of them exist yet. Those are checked later by someone who watched it happen.",
+    "- **Nothing conditional.** \"Once a send completes the id appears\" and \"before",
+    "  a send neither element exists\" each describe a moment. A check has no way to",
+    "  know which moment it is looking at, so it asserts the condition always held.",
+    "  Take only claims true whenever the app is up.",
+    "- **Nothing vacuous.** `matches: \".*\"` and `contains: \"\"` hold against a blank",
+    "  page. If you cannot say what would make it fail, it is not a check.",
+    "- **Patterns are JavaScript.** They go to `new RegExp`, which has no inline",
+    "  flags — write `[Nn]ot`, not `(?i)not`. One that will not parse is discarded.",
     "- **Quote the phrase each check comes from.** A reader has to be able to see",
     "  whether you read it the way they meant it.",
     "- **An empty list is a fine answer.** Most specs are mostly judgement.",
