@@ -6,7 +6,12 @@ import { emit } from "./events.js";
 import { describeMessage, endingOf, said } from "./messages.js";
 import type { Run } from "./run.js";
 
-/** See PLAN-V2 § Bounds. Starting points, to be tuned once there are real runs. */
+/**
+ * See PLAN-V2 § Bounds. Left alone: nine runs measured a turn here at $0.032,
+ * so 300 of them is $9.60 against the cap — matched by luck rather than design,
+ * but matched, and the busiest generation used 54 turns of the 300. EVALUATE's
+ * equivalents were not, and say why in their own comment.
+ */
 const WALL_CLOCK_MS = 60 * 60_000;
 const MAX_TURNS = 300;
 const MAX_BUDGET_USD = 10;

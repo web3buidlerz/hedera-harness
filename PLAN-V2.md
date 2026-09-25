@@ -135,7 +135,32 @@ Nothing runs unbounded. Each phase adds the bound for whatever it introduces, so
 | `install` / `build` / `test` | 3 | 20 min each | TEST failure — repair |
 | `serve` becoming ready | 3 | 2 min to a URL that answers | TEST failure — repair |
 | GENERATE query | 4 | `maxTurns`, `maxBudgetUsd`, wall clock via `AbortController` | abort |
-| EVALUATE query | 5 | same, shorter | no verdict — re-run once, then abort |
+| EVALUATE query | 5 | same, and the same size | no verdict — re-run once, then abort |
+
+**Measured, once there were runs to measure.** Nine of them, and they falsified
+both guesses this table was built on.
+
+*Turns, not spend, was the bound that fired.* A `send-hbar` evaluation ended at
+`error_max_turns` on turn 121 having spent $2.51 of $5 in 13 of its 20 minutes.
+The comment above the constant had predicted a turn costs $0.012 and that 120 of
+them would bite at $1.68; a turn costs $0.021. So the bound nobody chose was the
+only one that could fire, and it cost a verdict. Spend is now stated and turns
+and wall clock are derived from it, which puts them just past it instead of just
+before — they catch the case they are actually for, a loop going nowhere without
+spending anything.
+
+*Judging is not cheaper than building.* Across the three transactional runs
+evaluation cost $4.41 to generation's $1.48, so EVALUATE no longer gets the
+smaller budget. GENERATE's numbers survived contact: 300 turns at its measured
+$0.032 is $9.60 against a $10 cap.
+
+| spec | attempts | total | wall clock |
+|---|---|---|---|
+| read-only, one page | 1 | $0.57–1.51 | 6–10 min |
+| `send-hbar`, transactional | 2 | $2.08–5.89 | 12–36 min |
+
+Two attempts every time on the transactional spec, and once without converging.
+A read-only spec has never needed a second.
 
 The split follows the third rule of the loop: an agent that hangs is the harness's problem and must not cost an attempt, while a `build` or `test` that never returns is a defect in what the agent just wrote and goes back as a repair. EVALUATE has one extra safeguard the others can't have — `_meta['claude/endTurn']` on `submit_verdict`, so answering ends the turn rather than leaving the agent to decide it is finished.
 

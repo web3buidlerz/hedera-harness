@@ -11,22 +11,34 @@ import { type Wallet, mirrorNode, network, redact, wallet } from "./wallet.js";
 import { describeMessage, endingOf, said } from "./messages.js";
 import type { Run } from "./run.js";
 
-/** See PLAN-V2 § Bounds — shorter than GENERATE: judging is cheaper than building. */
-const WALL_CLOCK_MS = 20 * 60_000;
 /**
- * A turn is one round-trip to the model, and real evaluations cost about
- * $0.012 of them — so this bound is also a spend bound, whether or not it is
- * named like one. At 120 it bites around $1.68, well clear of MAX_BUDGET_USD
- * and roughly twice the busiest evaluation yet measured (57 turns).
+ * See PLAN-V2 § Bounds. These were predictions; nine runs measured them.
  *
- * It was briefly 300, which works out at ~$4.20 — within 15% of the budget cap,
- * so the two would have fired at almost the same moment and one of them would
- * have stopped being a bound at all. Move this only when it has actually
- * stopped legitimate work, not because it is the tightest number here; something
- * always is. Breaching it now costs a pause rather than the run.
+ * A `send-hbar` evaluation ended at `error_max_turns` on turn 121 having spent
+ * $2.51 of $5 in 13 of its 20 minutes. The comment here had predicted $0.012 a
+ * turn and a bite at $1.68; a turn costs $0.021. So the only bound that could
+ * fire was the one nobody chose, and it cost a verdict. Spend is stated now and
+ * the others derive from it.
+ *
+ * The other falsified guess: judging is not cheaper than building. Across the
+ * transactional runs evaluation cost $4.41 to generation's $1.48, so the two
+ * halves get the same budget. GENERATE's own numbers survived — see its comment.
  */
-const MAX_TURNS = 120;
-const MAX_BUDGET_USD = 5;
+const MAX_BUDGET_USD = 10;
+
+/** Measured, not assumed: $2.51 over the 121 turns of a real evaluation. */
+const COST_PER_TURN_USD = 0.021;
+/** Measured the same way: 13.4 minutes over those 121 turns. */
+const SECONDS_PER_TURN = 6.7;
+
+/**
+ * Turns and wall clock exist to end a loop that is making no progress, so they
+ * are sized to expire just after the budget rather than before it. A cheap
+ * infinite loop is what they actually catch — one that spends nothing while
+ * going nowhere.
+ */
+const MAX_TURNS = Math.ceil(MAX_BUDGET_USD / COST_PER_TURN_USD);
+const WALL_CLOCK_MS = Math.ceil((MAX_TURNS * SECONDS_PER_TURN) / 60) * 60_000;
 
 const TOOL = "submit_verdict";
 const DECLARE = "declare_check";
