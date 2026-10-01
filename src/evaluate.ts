@@ -312,11 +312,7 @@ async function pass(
           failIfUnavailable: true,
           filesystem: contained(workspace, repoRoot),
           // The evaluator has to reach the app it is judging, and the app is on
-          // a loopback port. Without this the sandbox refuses the connection —
-          // both families, so it is not a localhost-resolves-to-IPv6 problem —
-          // and the agent's own recovery is to rerun the command with its
-          // sandbox switched off. Granting the one thing it needs is better
-          // than a containment the agent routes around. External egress was
+          // a loopback port. External egress was
           // never blocked; it reads the mirror node in the same session.
           network: { allowLocalBinding: true },
         },
@@ -338,10 +334,6 @@ async function pass(
         emit({ type: "tool", tool: step.tool, argument: step.argument, phase: "evaluate", attempt });
       }
       sessionId ??= message.session_id;
-      // A bound the SDK enforces itself arrives as an error result and *then*
-      // throws when the iterator is pulled again. Reading it here is what turns
-      // "the run died" into "no verdict, ask once more", which is what the
-      // bounds table always said it was.
       const ending = endingOf(message, MAX_TURNS);
       if (ending !== null) {
         costUsd = ending.costUsd;
