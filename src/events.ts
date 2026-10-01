@@ -65,6 +65,8 @@ export type HarnessEvent =
       attempt: number;
       verdict: "pass" | "fail" | "none";
       findings: number;
+      /** What MAX_TURNS is derived from. Recorded so the rate can be measured, not assumed. */
+      turns?: number | undefined;
       /** Same caveat as generation's: a list-price equivalent, not money. */
       costUsd?: number | undefined;
       durationMs: number;
@@ -105,7 +107,14 @@ export type HarnessEvent =
     }
   | { type: "branch"; branch: string }
   /** What DERIVE read out of the spec, before the app existed. */
-  | { type: "derived"; checks: Array<{ id: string; because?: string | undefined }> }
+  /** What DERIVE read out of the spec. Emitted at zero too: none is an answer, and
+   * the only thing that distinguishes it from a derivation that failed. */
+  | {
+      type: "derived";
+      checks: Array<{ id: string; because?: string | undefined }>;
+      /** Proposals discarded as unusable — a wrong shape, or two claims in one. */
+      dropped: number;
+    }
   /** The wizard's proposed commands, before the operator confirms them. */
   | {
       type: "proposal";
