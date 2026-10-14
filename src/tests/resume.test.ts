@@ -136,3 +136,61 @@ test("a run does not continue itself", async () => {
   const resumable = await lastRun(repo, "2026-09-30T00-00-00-000Z");
   assert.equal(resumable.branch, "harness/real");
 });
+
+/** Adds a run that started on `from` and made `branch`, to an existing repo. */
+async function alsoRan(repo: string, stamp: string, from: string, branch: string): Promise<void> {
+  const dir = join(repo, ".harness", "runs", stamp);
+  await mkdir(join(dir, "attempt-1"), { recursive: true });
+  const events = [
+    { type: "run:started", stamp, from },
+    { type: "branch", branch },
+  ];
+  await writeFile(join(dir, "events.jsonl"), events.map((e) => JSON.stringify(e)).join("\n"));
+  await writeFile(join(dir, "attempt-1", "feedback.json"), JSON.stringify({ ok: true, failures: [] }));
+}
+
+/**
+ * The case this exists for. `.harness/runs/` is outside git and shared by every
+ * branch, so in a repo holding two apps the newest run is often the other app's.
+ * Found by continuing one template right after a run of a different one, and
+ * nearly building the first template's features on the second's code.
+ */
+test("continuing takes the newest run of your branch, not the newest run", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "harness-resume-"));
+  await alsoRan(repo, "2026-10-13T08-00-00-000Z", "templates/dvp", "harness/dvp-run");
+  await alsoRan(repo, "2026-10-14T04-00-00-000Z", "templates/audit", "harness/audit-run");
+
+  assert.equal((await lastRun(repo, "", "templates/dvp")).branch, "harness/dvp-run");
+  assert.equal((await lastRun(repo, "", "templates/audit")).branch, "harness/audit-run");
+});
+
+test("standing on the branch a run made continues that run", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "harness-resume-"));
+  await alsoRan(repo, "2026-10-13T08-00-00-000Z", "templates/dvp", "harness/dvp-run");
+  await alsoRan(repo, "2026-10-14T04-00-00-000Z", "templates/audit", "harness/audit-run");
+
+  assert.equal((await lastRun(repo, "", "harness/dvp-run")).branch, "harness/dvp-run");
+});
+
+/** A second spec built on a passed run starts from that run's branch, and continuing from there finds it. */
+test("a run stacked on a harness branch is found from that branch", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "harness-resume-"));
+  await alsoRan(repo, "2026-10-13T08-00-00-000Z", "templates/dvp", "harness/dvp-run");
+  await alsoRan(repo, "2026-10-14T09-00-00-000Z", "harness/dvp-run", "harness/dvp-second");
+
+  assert.equal((await lastRun(repo, "", "harness/dvp-run")).branch, "harness/dvp-second");
+});
+
+test("with nothing of yours to continue, it names whose run is newest instead of taking it", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "harness-resume-"));
+  await alsoRan(repo, "2026-10-14T04-00-00-000Z", "templates/audit", "harness/audit-run");
+
+  await assert.rejects(
+    () => lastRun(repo, "", "templates/bond"),
+    (error: Error) =>
+      error instanceof ResumeError &&
+      error.message.includes("templates/bond") &&
+      error.message.includes("templates/audit") &&
+      error.message.includes("harness/audit-run"),
+  );
+});
