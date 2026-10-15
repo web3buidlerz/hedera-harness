@@ -3,7 +3,7 @@ import { writeFile } from "node:fs/promises";
 import type { HarnessConfig } from "./config.js";
 import type { Check } from "./checks.js";
 import { type Outcome, evaluate } from "./evaluate.js";
-import { type Feedback, repairPrompt } from "./prompts/repair.js";
+import { type Feedback, carryOnPrompt, repairPrompt } from "./prompts/repair.js";
 import { generate } from "./generate.js";
 import { commitWork } from "./git.js";
 import { type Timings, emit } from "./events.js";
@@ -42,7 +42,7 @@ export interface LoopOptions {
    * those rather than as a fresh reading of the spec — the code is already on
    * the branch, so asking for it again would be asking for work that exists.
    */
-  continuing?: { failures: AttemptFailure[]; artifacts: string } | undefined;
+  continuing?: { failures: AttemptFailure[]; artifacts: string; attempt: number } | undefined;
   /** Repo-relative spec path, when it lives in the repo. Never committed as work. */
   specInRepo?: string | undefined;
   /**
@@ -97,10 +97,7 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
   // Recorded once: what the agent could reach. A run that behaves differently
   // from another is usually a different skill set, and this is the record of it.
   let skills: string[] = [];
-  let prompt =
-    options.continuing !== undefined && options.continuing.failures.length > 0
-      ? repairPrompt({ ok: false, failures: options.continuing.failures }, options.continuing.artifacts)
-      : options.spec;
+  let prompt = opening(options);
   let session: string | undefined;
   let previous: Set<string> = new Set();
   // Kept for `result.json`: which failures each attempt produced, so a finished
@@ -170,6 +167,24 @@ export async function runLoop(options: LoopOptions): Promise<LoopResult> {
 
   await writeResult(run, { passed: false, attempts: history.length, branch: options.branch, timings, skills, history });
   return { passed: false, attempts: history.length, branch: options.branch, timings };
+}
+
+/**
+ * What the first attempt is asked for.
+ *
+ * Three cases, and the middle one used to fall through to the last: a fresh
+ * run reads the spec, a continuation with failures repairs them, and a
+ * continuation without failures is told that the work on the branch is the
+ * work so far. That third case is a run that died before anything was judged,
+ * or one that passed — and in both, the code is already there.
+ */
+function opening(options: LoopOptions): string {
+  const { continuing, spec } = options;
+  if (continuing === undefined) return spec;
+  if (continuing.failures.length > 0) {
+    return repairPrompt({ ok: false, failures: continuing.failures }, continuing.artifacts);
+  }
+  return carryOnPrompt(spec, continuing.attempt);
 }
 
 /**

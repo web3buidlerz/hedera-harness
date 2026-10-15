@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { afterEach } from "node:test";
-import type { Agents } from "../loop.js";
+import type { Agents, LoopOptions } from "../loop.js";
 import type { Outcome } from "../evaluate.js";
 import { type HarnessEvent, collect, reset } from "../events.js";
 import { runCommand } from "../commands.js";
@@ -55,7 +55,11 @@ interface Driven {
   dir: string;
 }
 
-async function drive(verdicts: Outcome[], maxAttempts = 3): Promise<Driven> {
+async function drive(
+  verdicts: Outcome[],
+  maxAttempts = 3,
+  continuing?: LoopOptions["continuing"],
+): Promise<Driven> {
   const repo = await mkdtemp(join(tmpdir(), "harness-loop-"));
   await runCommand(
     { run: "git init -q -b main && git config user.email t@t && git config user.name t" },
@@ -105,6 +109,7 @@ async function drive(verdicts: Outcome[], maxAttempts = 3): Promise<Driven> {
     judgeModel: "stub-judge",
     checks: [],
     agents,
+    continuing,
   });
 
   return { events, passed: result.passed, attempts: result.attempts, generations, dir: run.dir };
@@ -281,3 +286,24 @@ test("a pass with nothing before it has nothing to have fixed", async () => {
   assert.deepEqual(tallies(driven.events), [[0, 0, 0]]);
 });
 
+/**
+ * The run this exists for. A continuation whose previous run never reported a
+ * failure — it died before anything was judged — was handed the spec and
+ * nothing else, which reads as a fresh build. It rebuilt 2,475 lines that were
+ * already committed, under different names, and ran out of wall clock before
+ * any of it was tested.
+ */
+test("continuing with nothing to repair says the work on the branch is the work so far", async () => {
+  const driven = await drive([PASSES], 1, { failures: [], artifacts: "x", attempt: 0 });
+  const opening = driven.generations[0]?.prompt ?? "";
+
+  assert.match(opening, /already holds work towards the spec/);
+  assert.match(opening, /Do not start again from scratch/);
+  assert.match(opening, /# Spec/, "the spec still has to be carried, for whatever is unbuilt");
+});
+
+test("a run that is not continuing anything is still asked for the spec alone", async () => {
+  const driven = await drive([PASSES], 1);
+
+  assert.equal(driven.generations[0]?.prompt, "# Spec");
+});

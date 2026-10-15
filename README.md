@@ -170,7 +170,7 @@ evaluator checked rather than taking its word.
                        produced and the id each hashes to
 ```
 
-If a run stops before it finishes — you interrupt it, or it runs out of budget — every attempt it completed is already committed to its branch. `harness run --spec <path> --continue` picks up from there: it branches from that work rather than from yours, and the first attempt starts by repairing what the last one failed on instead of reading the spec against code that already exists. A run that *passed* is equally continuable; that is how a second spec builds on the first.
+If a run stops before it finishes — you interrupt it, or it runs out of budget — every attempt it completed is already committed to its branch. `harness run --spec <path> --continue` picks up from there: it branches from that work rather than from yours, and the first attempt starts by repairing what the last one failed on instead of reading the spec against code that already exists. A run that *passed* is equally continuable; that is how a second spec builds on the first. When there is no failure to repair — the run passed, or it died before anything was judged — the first attempt is told that the branch already holds the work so far and to carry it on, rather than being handed the spec as if nothing existed.
 
 `--continue` only considers runs that started from, or produced, the branch you are on. `.harness/` is shared by every branch, so in a repo holding several apps the newest run may belong to another one; when nothing matches, the harness says which branch the newest run belongs to rather than building on it.
 

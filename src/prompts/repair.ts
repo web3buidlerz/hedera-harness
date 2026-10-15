@@ -58,3 +58,32 @@ function located(evidence: string, artifacts: string): string {
     ? evidence
     : join(artifacts, "evidence", name);
 }
+
+/**
+ * What a continuation is told when no attempt reported a failure.
+ *
+ * `--continue` leaves the previous run's commits in the tree, and that was the
+ * whole message: the prompt was the spec and nothing else, which reads as a
+ * fresh build. A fresh build of a spec that is already half implemented is a
+ * rewrite — one run spent an hour rebuilding 2,475 lines that were a `git log`
+ * away, under different names, and ran out of wall clock before any of it was
+ * tested.
+ *
+ * Reached two ways: a run that died before anything was judged, and a run that
+ * passed — which is how a second spec builds on the first.
+ */
+export function carryOnPrompt(spec: string, attempt: number): string {
+  const before =
+    attempt === 0
+      ? "a run that stopped before any attempt was judged"
+      : `a run whose attempt ${attempt} passed`;
+  return [
+    `This branch already holds work towards the spec below, from ${before}.`,
+    "",
+    "Read what is there before writing anything: `git log` for what it committed, and the files those commits name. Then carry that work on — extend it, fix what is wrong with it, finish what is missing. Do not start again from scratch, and do not add a second version of something that is already there under another name. The code on this branch is the work so far, not a draft to replace.",
+    "",
+    "The spec, in full, because whatever is unbuilt still has to be built:",
+    "",
+    spec,
+  ].join("\n");
+}
