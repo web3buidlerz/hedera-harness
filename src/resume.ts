@@ -12,6 +12,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AttemptFailure } from "./failure.js";
+import { commitsAhead } from "./git.js";
 import { ARTIFACT_DIR } from "./run.js";
 
 export class ResumeError extends Error {
@@ -31,6 +32,11 @@ export interface Resumable {
   failures: AttemptFailure[];
   /** Run-relative, so a failure's evidence still resolves from the new run. */
   artifacts: string;
+  /**
+   * The commit that run started from (`run:started.head`), or null for a run
+   * from before it was recorded. What its branch holds is measured from here.
+   */
+  head: string | null;
 }
 
 /**
@@ -65,7 +71,7 @@ export async function lastRun(
   let newestElsewhere: { stamp: string; from: string | null; branch: string } | null = null;
   for (const stamp of entries.reverse()) {
     const dir = join(runs, stamp);
-    const { from, branch } = await branchesOf(dir);
+    const { from, head, branch } = await branchesOf(dir);
     if (branch === null) continue;
     if (onBranch !== undefined && from !== onBranch && branch !== onBranch) {
       newestElsewhere ??= { stamp, from, branch };
@@ -79,6 +85,7 @@ export async function lastRun(
       attempt: reported?.attempt ?? 0,
       failures: reported?.failures ?? [],
       artifacts: join(ARTIFACT_DIR, "runs", stamp, `attempt-${reported?.attempt ?? 1}`),
+      head,
     };
   }
   if (newestElsewhere !== null) {
@@ -94,15 +101,68 @@ export async function lastRun(
   );
 }
 
-/** Where a run started (`run:started.from`) and the branch it made (`branch`). */
-async function branchesOf(dir: string): Promise<{ from: string | null; branch: string | null }> {
-  const found: { from: string | null; branch: string | null } = { from: null, branch: null };
+/**
+ * Refuses a continuation that would start from less than you already have.
+ *
+ * `--continue` works by switching to the run's branch, because that is where
+ * its attempts were committed. Two things break that, and both break it in
+ * silence. A branch that holds nothing, because the run died before committing
+ * anything: the agent is handed an empty tree and writes the whole spec again.
+ * And a branch behind the one you are on, because you committed the work
+ * yourself after a run that could not: switching takes your commits out of the
+ * tree, and the agent writes those again too. Both happened, in that order, in
+ * one afternoon — the second cost an hour and rebuilt 2,475 lines in a shape
+ * that no longer matched.
+ *
+ * Measured in git rather than read from the artifacts on purpose: a run
+ * interrupted with Ctrl-C commits real work as `harness: cancelled` and never
+ * writes a `feedback.json`, so "did an attempt report?" would refuse a
+ * continuation that genuinely has something to continue. "Did the branch move
+ * past where the run started?" is true for that run, and false only for a
+ * branch that is actually empty.
+ */
+export async function assertContinuable(
+  resuming: Resumable,
+  onBranch: string,
+  repoRoot: string,
+): Promise<void> {
+  const { stamp, branch, head } = resuming;
+  // A run from before `head` was recorded keeps the old benefit of the doubt.
+  if (head !== null && (await commitsAhead(head, branch, repoRoot)) === 0) {
+    throw new ResumeError(
+      `${stamp} committed nothing — ${branch} is still at ${head}, the commit that run started ` +
+        `from. There is no work of its to continue; drop --continue to build on ${onBranch}, ` +
+        `which is where anything it wrote would be.`,
+    );
+  }
+
+  const dropped = await commitsAhead(branch, "HEAD", repoRoot);
+  if (dropped > 0) {
+    throw new ResumeError(
+      `${branch} is behind ${onBranch} by ${dropped} commit(s), so continuing it would build ` +
+        `without them and ask the agent for work you already have. Merge ${onBranch} into ` +
+        `${branch} first, or drop --continue to build on ${onBranch} as it is.`,
+    );
+  }
+}
+
+/** Where a run started — the branch and the commit — and the branch it made. */
+interface Ends {
+  from: string | null;
+  head: string | null;
+  branch: string | null;
+}
+
+/** All three are already in a run's events, written before it generated anything. */
+async function branchesOf(dir: string): Promise<Ends> {
+  const found: Ends = { from: null, head: null, branch: null };
   const source = await readFile(join(dir, "events.jsonl"), "utf8").catch(() => null);
   if (source === null) return found;
   for (const line of source.split("\n")) {
     if (line.trim() === "") continue;
-    const event = JSON.parse(line) as { type?: string; branch?: string; from?: string };
+    const event = JSON.parse(line) as { type?: string; branch?: string; from?: string; head?: string };
     if (event.type === "run:started" && typeof event.from === "string") found.from = event.from;
+    if (event.type === "run:started" && typeof event.head === "string") found.head = event.head;
     if (event.type === "branch" && typeof event.branch === "string") found.branch = event.branch;
   }
   return found;

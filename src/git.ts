@@ -64,6 +64,18 @@ export async function isTracked(path: string, cwd: string): Promise<boolean> {
   return (await git(["ls-files", "--", path], cwd)) !== "";
 }
 
+/**
+ * How many commits `tip` has that `base` does not.
+ *
+ * Counted rather than asked as `merge-base --is-ancestor`, which answers
+ * through exit codes — 1 for "no", 128 for a ref that is gone — and `GitError`
+ * does not carry the code, so a deleted branch would read as an answer. This
+ * gives a number worth putting in a message, and fails loudly on a bad ref.
+ */
+export async function commitsAhead(base: string, tip: string, cwd: string): Promise<number> {
+  return Number(await git(["rev-list", "--count", `${base}..${tip}`], cwd));
+}
+
 /** Creates `name` from the current commit and switches to it. */
 export async function createBranch(name: string, cwd: string): Promise<void> {
   await git(["switch", "--create", name], cwd);

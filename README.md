@@ -174,6 +174,8 @@ If a run stops before it finishes — you interrupt it, or it runs out of budget
 
 `--continue` only considers runs that started from, or produced, the branch you are on. `.harness/` is shared by every branch, so in a repo holding several apps the newest run may belong to another one; when nothing matches, the harness says which branch the newest run belongs to rather than building on it.
 
+It also refuses to start from less than you have: a run whose branch holds nothing — it died before committing anything — and a branch behind the one you are on, which continuing would build without. Both are named with the fix rather than taken, because either one ends with the agent writing code that already exists.
+
 `.harness/` is added to `.git/info/exclude`, so it never appears in your diffs and never needs a `.gitignore` entry.
 
 ## How it decides

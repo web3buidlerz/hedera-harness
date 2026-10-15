@@ -10,7 +10,7 @@ import { initialise } from "./init.js";
 import { runLoop } from "./loop.js";
 import { killTrackedChildren } from "./commands.js";
 import { commitWork, createBranch, currentBranch, headCommit, repoRoot, switchBranch } from "./git.js";
-import { lastRun } from "./resume.js";
+import { assertContinuable, lastRun } from "./resume.js";
 import { Run, ensureExcluded, timestamp } from "./run.js";
 import { type Timings, emit, subscribe } from "./events.js";
 import { renderToFile, renderToJson } from "./render/json.js";
@@ -314,6 +314,8 @@ async function main(argv: string[]): Promise<number> {
   // `startedOn` was recorded before this, so the run still returns you home.
   const resuming = options.continue ? await lastRun(root, stamp, startedOn) : null;
   if (resuming !== null) {
+    // Before the switch, because the switch is what would lose the work.
+    await assertContinuable(resuming, startedOn, root);
     await switchBranch(resuming.branch, root);
     emit({
       type: "note",

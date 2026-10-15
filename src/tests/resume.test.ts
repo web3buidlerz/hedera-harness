@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ResumeError, lastRun } from "../resume.js";
+import { type Resumable, ResumeError, assertContinuable, lastRun } from "../resume.js";
+import { runCommand } from "../commands.js";
 
 /** Builds a run directory of the shape a real run leaves behind. */
 async function ranAs(
@@ -193,4 +194,80 @@ test("with nothing of yours to continue, it names whose run is newest instead of
       error.message.includes("templates/audit") &&
       error.message.includes("harness/audit-run"),
   );
+});
+
+async function sh(repo: string, command: string): Promise<string> {
+  const { output } = await runCommand({ run: command }, repo, 10_000);
+  return output.trim();
+}
+
+/** A repo with one commit on `main`: these checks ask git, not the artifacts. */
+async function repoWithBase(): Promise<string> {
+  const repo = await mkdtemp(join(tmpdir(), "harness-continuable-"));
+  await sh(
+    repo,
+    "git init -q -b main && git config user.email t@t && git config user.name t" +
+      " && git commit -q --allow-empty -m base",
+  );
+  return repo;
+}
+
+/** What `lastRun` returns for a run that went from `main` to `branch`. */
+function ranFrom(head: string | null, branch: string): Resumable {
+  return { stamp: "2026-10-15T15-29-45-383Z", branch, attempt: 0, failures: [], artifacts: "x", head };
+}
+
+/**
+ * The first half of the afternoon this exists for. A rate limit killed
+ * generation 55 minutes in; nothing was committed, so the run's branch was
+ * still at the commit the run started from. Continuing it hands the agent an
+ * empty tree, and it writes the whole spec again.
+ */
+test("a run that committed nothing is refused, not continued into an empty tree", async () => {
+  const repo = await repoWithBase();
+  const head = await sh(repo, "git rev-parse HEAD");
+  await sh(repo, "git branch harness/run");
+
+  await assert.rejects(
+    assertContinuable(ranFrom(head, "harness/run"), "templates/bond", repo),
+    (error: Error) =>
+      error instanceof ResumeError &&
+      /committed nothing/.test(error.message) &&
+      /drop --continue/.test(error.message),
+  );
+});
+
+/**
+ * The second half. The work was recovered by hand onto the template branch, so
+ * the run's branch was now a commit *behind* it — and continuing switched back
+ * to it, taking 2,475 lines out of the tree without a word.
+ */
+test("a branch behind yours is refused, counting what it would drop", async () => {
+  const repo = await repoWithBase();
+  const head = await sh(repo, "git rev-parse HEAD");
+  // The run banked an attempt, so the empty-branch check passes and this one decides.
+  await sh(repo, "git switch -q -c harness/run && git commit -q --allow-empty -m 'harness: attempt 1'");
+  await sh(repo, "git switch -q main && git commit -q --allow-empty -m 'feat: first iteration'");
+
+  await assert.rejects(
+    assertContinuable(ranFrom(head, "harness/run"), "main", repo),
+    (error: Error) => error instanceof ResumeError && /behind main by 1 commit/.test(error.message),
+  );
+});
+
+test("a branch holding the work, with nothing of yours missing, continues", async () => {
+  const repo = await repoWithBase();
+  const head = await sh(repo, "git rev-parse HEAD");
+  await sh(repo, "git switch -q -c harness/run && git commit -q --allow-empty -m 'harness: attempt 1'");
+  await sh(repo, "git switch -q main");
+
+  await assertContinuable(ranFrom(head, "harness/run"), "main", repo);
+});
+
+/** Runs predate `run:started.head`; theirs stays continuable rather than refused. */
+test("a run with no recorded head is still continuable", async () => {
+  const repo = await repoWithBase();
+  await sh(repo, "git branch harness/run");
+
+  await assertContinuable(ranFrom(null, "harness/run"), "main", repo);
 });
