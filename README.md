@@ -170,13 +170,72 @@ evaluator checked rather than taking its word.
                        produced and the id each hashes to
 ```
 
-If a run stops before it finishes — you interrupt it, or it runs out of budget — every attempt it completed is already committed to its branch. `harness run --spec <path> --continue` picks up from there: it branches from that work rather than from yours, and the first attempt starts by repairing what the last one failed on instead of reading the spec against code that already exists. A run that *passed* is equally continuable; that is how a second spec builds on the first. When there is no failure to repair — the run passed, or it died before anything was judged — the first attempt is told that the branch already holds the work so far and to carry it on, rather than being handed the spec as if nothing existed.
-
-`--continue` only considers runs that started from, or produced, the branch you are on. `.harness/` is shared by every branch, so in a repo holding several apps the newest run may belong to another one; when nothing matches, the harness says which branch the newest run belongs to rather than building on it.
-
-It also refuses to start from less than you have: a run whose branch holds nothing — it died before committing anything — and a branch behind the one you are on, which continuing would build without. Both are named with the fix rather than taken, because either one ends with the agent writing code that already exists.
-
 `.harness/` is added to `.git/info/exclude`, so it never appears in your diffs and never needs a `.gitignore` entry.
+
+## Continuing a run
+
+A run that stops before it finishes leaves its work on its branch, and `--continue` is how the next one picks it up.
+
+Every attempt is committed as it happens, passing or failing, because a failed attempt is the diff you most want to read:
+
+```
+harness: attempt 1 (failed test)
+harness: attempt 2 (passed tests)
+```
+
+A generation that *dies* rather than returns — a rate limit mid-stream, the clock it is bounded by, a crash — is committed too, with the reason in the subject:
+
+```
+harness: attempt 1 (interrupted: the agent did not finish within 60 minutes)
+```
+
+That is what leaves the tree clean, returns you to your own branch, and gives the next run something to continue. Then:
+
+```bash
+harness run --spec specs/<name>.md --continue
+```
+
+It branches from that work rather than from yours, and what the first attempt is asked for depends on what the last one left behind:
+
+| The run being continued | The first attempt is asked to |
+|---|---|
+| ended on failures | repair them, with a path to the evidence for each |
+| passed | carry the work on — this is how a second spec builds on the first |
+| stopped before anything was judged | carry the work on, with the spec in full for whatever is unbuilt |
+
+The last two say so outright, rather than handing over the spec alone:
+
+> This branch already holds work towards the spec below […] Do not start again from scratch, and do not add a second version of something that is already there under another name.
+
+A bare spec read against a half-written implementation is a rewrite. One run spent its whole clock rebuilding 2,475 lines that were a `git log` away, under different names, and ran out of time before any of it was tested.
+
+### Which run it continues, and when it refuses
+
+`--continue` only considers runs that started from, or produced, the branch you are on. `.harness/` is shared by every branch, so in a repo holding several apps the newest run is often another app's.
+
+It refuses rather than guessing, and each refusal names the fix:
+
+- **the newest run belongs to another branch** — switch to that branch to continue it, or drop `--continue` to build on this one
+- **the run's branch holds nothing**, because the run died before committing anything — there is no work of its to continue
+- **the run's branch is behind the branch you are on** — continuing would build without your commits, so merge them in first
+
+All three otherwise end the same way: the agent writing code that already exists.
+
+### A spec bigger than one generation
+
+Some specs cannot be built inside one generation — anything that waits on real network events spends most of its clock waiting. Let the clock end the attempt. The work is committed, `--continue` starts the next one from it, and the spec gets built in slices rather than lost when the clock runs out. The clock's length lives beside the code it bounds, in `src/generate.ts`.
+
+### Work you recovered by hand
+
+If a run died without committing and you recovered its work onto your own branch, `--continue` will refuse it: the run's branch does not hold that work. Put it where the run would have, then continue from there:
+
+```bash
+git branch -f harness/<stamp> <your branch>
+git switch harness/<stamp>
+harness run --spec specs/<name>.md --continue
+```
+
+This needs the recovered commit to sit on top of the commit that run started from — `run:started.head`, in the run's own `events.jsonl`.
 
 ## How it decides
 
